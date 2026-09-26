@@ -1,0 +1,2168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>Trail</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+  :root {
+    --ink: #14100c;
+    --parch: #f6dea8;
+    --bark: #5a3a1a;
+    --text: #e9dcb8;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; margin: 0; background: var(--ink); overflow: hidden; }
+  body { color: var(--text); font: 13px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  #wrap {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--ink);
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  }
+  #game {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    outline: none;
+    touch-action: none;
+    background: #000;
+  }
+  #touch { position: fixed; inset: 0; pointer-events: none; }
+  #stick {
+    position: absolute;
+    left: calc(18px + env(safe-area-inset-left, 0px));
+    bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+    width: 120px; height: 120px; border-radius: 50%;
+    background: rgba(246, 222, 168, 0.12);
+    border: 2px solid rgba(246, 222, 168, 0.35);
+    pointer-events: auto; touch-action: none;
+  }
+  #knob {
+    position: absolute; left: 40px; top: 40px;
+    width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(246, 222, 168, 0.55);
+  }
+  .tbtn {
+    position: absolute;
+    border-radius: 50%;
+    border: 2px solid var(--bark);
+    background: rgba(246, 222, 168, 0.82);
+    color: #3b2314;
+    font: bold 15px ui-monospace, monospace;
+    pointer-events: auto; touch-action: none;
+  }
+  .tbtn:active { background: #ffeec4; }
+  #bA { width: 66px; height: 66px; right: calc(20px + env(safe-area-inset-right, 0px)); bottom: calc(30px + env(safe-area-inset-bottom, 0px)); }
+  #bRun { width: 54px; height: 54px; font-size: 12px; right: calc(98px + env(safe-area-inset-right, 0px)); bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
+  #bMenu { width: 46px; height: 46px; font-size: 12px; right: calc(30px + env(safe-area-inset-right, 0px)); bottom: calc(112px + env(safe-area-inset-bottom, 0px)); }
+</style>
+</head>
+<body>
+
+<div id="wrap"><canvas id="game" tabindex="0" aria-label="Trail, a pixel game about an immortal snail"></canvas></div>
+<div id="touch" hidden>
+  <div id="stick"><div id="knob"></div></div>
+  <button class="tbtn" id="bRun" type="button">RUN</button>
+  <button class="tbtn" id="bA" type="button">E</button>
+  <button class="tbtn" id="bMenu" type="button">Q</button>
+</div>
+
+<script>
+(function () {
+'use strict';
+// ================= core: helpers, font, input, sound =================
+var TILE = 16, MAP_W = 100, MAP_H = 80;
+var VW = 384, VH = 216;
+var cvs = document.getElementById('game');
+var ctx = cvs.getContext('2d');
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function dist(ax, ay, bx, by) { var dx = ax - bx, dy = ay - by; return Math.sqrt(dx * dx + dy * dy); }
+function makeCanvas(w, h) {
+  var c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  c.getContext('2d').imageSmoothingEnabled = false;
+  return c;
+}
+function fmt(n) { return Math.floor(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+function hash2(x, y, s) {
+  var h = (Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263) + Math.imul(s | 0, 1442695041)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+function vnoise(x, y, sc, s) {
+  var gx = x / sc, gy = y / sc, x0 = Math.floor(gx), y0 = Math.floor(gy);
+  var fx = gx - x0, fy = gy - y0;
+  fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+  var a = hash2(x0, y0, s), b = hash2(x0 + 1, y0, s), c = hash2(x0, y0 + 1, s), d = hash2(x0 + 1, y0 + 1, s);
+  return lerp(lerp(a, b, fx), lerp(c, d, fx), fy);
+}
+
+// ---------- sprites from strings ----------
+function spriteFromRows(rows, pal) {
+  var h = rows.length, w = 0;
+  for (var i = 0; i < h; i++) w = Math.max(w, rows[i].length);
+  var c = makeCanvas(w, h), g = c.getContext('2d');
+  for (var y = 0; y < h; y++) for (var x = 0; x < rows[y].length; x++) {
+    var col = pal[rows[y][x]];
+    if (col) { g.fillStyle = col; g.fillRect(x, y, 1, 1); }
+  }
+  return c;
+}
+function flipX(src) {
+  var c = makeCanvas(src.width, src.height), g = c.getContext('2d');
+  g.translate(src.width, 0); g.scale(-1, 1); g.drawImage(src, 0, 0);
+  return c;
+}
+
+// ---------- 5x7 bitmap font ----------
+var FONT = {
+  'A': ['.###.','#...#','#...#','#####','#...#','#...#','#...#'], 'B': ['####.','#...#','#...#','####.','#...#','#...#','####.'],
+  'C': ['.###.','#...#','#....','#....','#....','#...#','.###.'], 'D': ['###..','#..#.','#...#','#...#','#...#','#..#.','###..'],
+  'E': ['#####','#....','#....','####.','#....','#....','#####'], 'F': ['#####','#....','#....','####.','#....','#....','#....'],
+  'G': ['.###.','#...#','#....','#.###','#...#','#...#','.####'], 'H': ['#...#','#...#','#...#','#####','#...#','#...#','#...#'],
+  'I': ['.###.','..#..','..#..','..#..','..#..','..#..','.###.'], 'J': ['..###','...#.','...#.','...#.','...#.','#..#.','.##..'],
+  'K': ['#...#','#..#.','#.#..','##...','#.#..','#..#.','#...#'], 'L': ['#....','#....','#....','#....','#....','#....','#####'],
+  'M': ['#...#','##.##','#.#.#','#.#.#','#...#','#...#','#...#'], 'N': ['#...#','#...#','##..#','#.#.#','#..##','#...#','#...#'],
+  'O': ['.###.','#...#','#...#','#...#','#...#','#...#','.###.'], 'P': ['####.','#...#','#...#','####.','#....','#....','#....'],
+  'Q': ['.###.','#...#','#...#','#...#','#.#.#','#..#.','.##.#'], 'R': ['####.','#...#','#...#','####.','#.#..','#..#.','#...#'],
+  'S': ['.####','#....','#....','.###.','....#','....#','####.'], 'T': ['#####','..#..','..#..','..#..','..#..','..#..','..#..'],
+  'U': ['#...#','#...#','#...#','#...#','#...#','#...#','.###.'], 'V': ['#...#','#...#','#...#','#...#','#...#','.#.#.','..#..'],
+  'W': ['#...#','#...#','#...#','#.#.#','#.#.#','#.#.#','.#.#.'], 'X': ['#...#','#...#','.#.#.','..#..','.#.#.','#...#','#...#'],
+  'Y': ['#...#','#...#','.#.#.','..#..','..#..','..#..','..#..'], 'Z': ['#####','....#','...#.','..#..','.#...','#....','#####'],
+  '0': ['.###.','#...#','#..##','#.#.#','##..#','#...#','.###.'], '1': ['..#..','.##..','..#..','..#..','..#..','..#..','.###.'],
+  '2': ['.###.','#...#','....#','...#.','..#..','.#...','#####'], '3': ['#####','...#.','..#..','...#.','....#','#...#','.###.'],
+  '4': ['...#.','..##.','.#.#.','#..#.','#####','...#.','...#.'], '5': ['#####','#....','####.','....#','....#','#...#','.###.'],
+  '6': ['..##.','.#...','#....','####.','#...#','#...#','.###.'], '7': ['#####','....#','...#.','..#..','.#...','.#...','.#...'],
+  '8': ['.###.','#...#','#...#','.###.','#...#','#...#','.###.'], '9': ['.###.','#...#','#...#','.####','....#','...#.','.##..'],
+  'a': ['.....','.....','.###.','....#','.####','#...#','.####'], 'b': ['#....','#....','#.##.','##..#','#...#','#...#','####.'],
+  'c': ['.....','.....','.###.','#....','#....','#...#','.###.'], 'd': ['....#','....#','.##.#','#..##','#...#','#...#','.####'],
+  'e': ['.....','.....','.###.','#...#','#####','#....','.###.'], 'f': ['..##.','.#..#','.#...','###..','.#...','.#...','.#...'],
+  'g': ['.....','.####','#...#','#...#','.####','....#','.###.'], 'h': ['#....','#....','#.##.','##..#','#...#','#...#','#...#'],
+  'i': ['..#..','.....','.##..','..#..','..#..','..#..','.###.'], 'j': ['...#.','.....','..##.','...#.','...#.','#..#.','.##..'],
+  'k': ['#....','#....','#..#.','#.#..','##...','#.#..','#..#.'], 'l': ['.##..','..#..','..#..','..#..','..#..','..#..','.###.'],
+  'm': ['.....','.....','##.#.','#.#.#','#.#.#','#...#','#...#'], 'n': ['.....','.....','#.##.','##..#','#...#','#...#','#...#'],
+  'o': ['.....','.....','.###.','#...#','#...#','#...#','.###.'], 'p': ['.....','####.','#...#','#...#','####.','#....','#....'],
+  'q': ['.....','.####','#...#','#...#','.####','....#','....#'], 'r': ['.....','.....','#.##.','##..#','#....','#....','#....'],
+  's': ['.....','.....','.####','#....','.###.','....#','####.'], 't': ['.#...','.#...','###..','.#...','.#...','.#..#','..##.'],
+  'u': ['.....','.....','#...#','#...#','#...#','#..##','.##.#'], 'v': ['.....','.....','#...#','#...#','#...#','.#.#.','..#..'],
+  'w': ['.....','.....','#...#','#...#','#.#.#','#.#.#','.#.#.'], 'x': ['.....','.....','#...#','.#.#.','..#..','.#.#.','#...#'],
+  'y': ['.....','#...#','#...#','#...#','.####','....#','.###.'], 'z': ['.....','.....','#####','...#.','..#..','.#...','#####'],
+  '.': ['.....','.....','.....','.....','.....','.##..','.##..'], ',': ['.....','.....','.....','.....','.##..','..#..','.#...'],
+  "'": ['.##..','..#..','.#...','.....','.....','.....','.....'], '!': ['..#..','..#..','..#..','..#..','..#..','.....','..#..'],
+  '?': ['.###.','#...#','....#','...#.','..#..','.....','..#..'], ':': ['.....','.##..','.##..','.....','.##..','.##..','.....'],
+  ';': ['.....','.##..','.##..','.....','.##..','..#..','.#...'], '-': ['.....','.....','.....','#####','.....','.....','.....'],
+  '/': ['.....','....#','...#.','..#..','.#...','#....','.....'], '(': ['..#..','.#...','#....','#....','#....','.#...','..#..'],
+  ')': ['..#..','...#.','....#','....#','....#','...#.','..#..'], '+': ['.....','..#..','..#..','#####','..#..','..#..','.....'],
+  '%': ['##...','##..#','...#.','..#..','.#...','#..##','...##'], '"': ['#.#..','#.#..','.....','.....','.....','.....','.....'],
+  '>': ['#....','.#...','..#..','...#.','..#..','.#...','#....'], '<': ['...#.','..#..','.#...','#....','.#...','..#..','...#.'],
+  '=': ['.....','.....','#####','.....','#####','.....','.....'], '*': ['.....','#.#.#','.###.','#####','.###.','#.#.#','.....'],
+  '&': ['.##..','#..#.','#.#..','.#...','#.#.#','#..#.','.##.#'], '#': ['.#.#.','.#.#.','#####','.#.#.','#####','.#.#.','.#.#.'],
+  '_': ['.....','.....','.....','.....','.....','.....','#####']
+};
+var GLYPHS = {}, fontAtlas = null, tintCache = {};
+(function buildFont() {
+  var chars = Object.keys(FONT);
+  fontAtlas = makeCanvas(chars.length * 6, 7);
+  var g = fontAtlas.getContext('2d');
+  g.fillStyle = '#ffffff';
+  chars.forEach(function (ch, i) {
+    var rows = FONT[ch], c0 = 5, c1 = -1;
+    for (var r = 0; r < 7; r++) for (var c = 0; c < 5; c++) if (rows[r][c] === '#') { c0 = Math.min(c0, c); c1 = Math.max(c1, c); }
+    if (c1 < 0) { c0 = 0; c1 = 2; }
+    for (var r2 = 0; r2 < 7; r2++) for (var c2 = c0; c2 <= c1; c2++) if (rows[r2][c2] === '#') g.fillRect(i * 6 + c2 - c0, r2, 1, 1);
+    GLYPHS[ch] = { sx: i * 6, w: c1 - c0 + 1 };
+  });
+})();
+function tinted(color) {
+  if (tintCache[color]) return tintCache[color];
+  var c = makeCanvas(fontAtlas.width, 7), g = c.getContext('2d');
+  g.drawImage(fontAtlas, 0, 0);
+  g.globalCompositeOperation = 'source-in';
+  g.fillStyle = color; g.fillRect(0, 0, c.width, 7);
+  tintCache[color] = c;
+  return c;
+}
+function textW(str, s) {
+  s = s || 1;
+  var w = 0;
+  for (var i = 0; i < str.length; i++) {
+    var ch = str[i];
+    if (ch === ' ') { w += 3 * s; continue; }
+    var gl = GLYPHS[ch] || GLYPHS['?'];
+    w += (gl.w + 1) * s;
+  }
+  return Math.max(0, w - s);
+}
+function drawText(g, str, x, y, color, s, shadow) {
+  s = s || 1;
+  if (shadow) drawText(g, str, x + s, y + s, shadow, s);
+  var atlas = tinted(color), cx = Math.round(x), cy = Math.round(y);
+  for (var i = 0; i < str.length; i++) {
+    var ch = str[i];
+    if (ch === ' ') { cx += 3 * s; continue; }
+    var gl = GLYPHS[ch] || GLYPHS['?'];
+    g.drawImage(atlas, gl.sx, 0, gl.w, 7, cx, cy, gl.w * s, 7 * s);
+    cx += (gl.w + 1) * s;
+  }
+  return cx;
+}
+function wrapText(str, maxW, s) {
+  var out = [];
+  str.split('\n').forEach(function (para) {
+    var words = para.split(' '), line = '';
+    words.forEach(function (w) {
+      var t = line ? line + ' ' + w : w;
+      if (textW(t, s) > maxW && line) { out.push(line); line = w; } else line = t;
+    });
+    out.push(line);
+  });
+  return out;
+}
+
+// ---------- input ----------
+var keys = {}, pressed = {};
+var PREVENT = { ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1, ' ': 1, Tab: 1 };
+function normKey(k) { return k && k.length === 1 ? k.toLowerCase() : k; }
+window.addEventListener('keydown', function (e) {
+  var k = normKey(e.key);
+  if (!keys[k]) pressed[k] = true;
+  keys[k] = true;
+  if (PREVENT[e.key]) e.preventDefault();
+  Snd.unlock();
+});
+window.addEventListener('keyup', function (e) { keys[normKey(e.key)] = false; });
+window.addEventListener('blur', function () { keys = {}; touch.vx = touch.vy = 0; touch.run = false; });
+
+var touch = { vx: 0, vy: 0, run: false, lastDir: 0 };
+var Input = {
+  x: function () { var v = 0; if (keys.ArrowLeft || keys.a) v -= 1; if (keys.ArrowRight || keys.d) v += 1; return clamp(v + touch.vx, -1, 1); },
+  y: function () { var v = 0; if (keys.ArrowUp || keys.w) v -= 1; if (keys.ArrowDown || keys.s) v += 1; return clamp(v + touch.vy, -1, 1); },
+  run: function () { return !!(keys.Shift || touch.run); },
+  hit: function (a) {
+    var p = pressed;
+    switch (a) {
+      case 'ok': return !!(p.e || p[' '] || p.Enter || p.__a);
+      case 'back': return !!(p.Escape || p.Backspace || p.__back);
+      case 'up': return !!(p.ArrowUp || p.w || p.__up);
+      case 'down': return !!(p.ArrowDown || p.s || p.__down);
+      case 'left': return !!(p.ArrowLeft || p.a || p.__left);
+      case 'right': return !!(p.ArrowRight || p.d || p.__right);
+      case 'journal': return !!(p.q || p.Tab || p.__menu);
+      case 'mute': return !!p.m;
+    }
+    return false;
+  },
+  num: function () { for (var i = 1; i <= 5; i++) if (pressed[String(i)]) return i; return pressed.__slot || 0; },
+  endFrame: function () { pressed = {}; }
+};
+
+// touch controls (shown on coarse pointers)
+(function setupTouch() {
+  var coarse = false;
+  try { coarse = window.matchMedia('(pointer: coarse)').matches; } catch (e) {}
+  var pad = document.getElementById('touch');
+  if (coarse) pad.hidden = false;
+  var stick = document.getElementById('stick'), knob = document.getElementById('knob');
+  var sid = null, cx = 0, cy = 0;
+  function moveStick(e) {
+    var dx = e.clientX - cx, dy = e.clientY - cy, d = Math.sqrt(dx * dx + dy * dy), m = 44;
+    if (d > m) { dx = dx / d * m; dy = dy / d * m; }
+    knob.style.left = (40 + dx) + 'px'; knob.style.top = (40 + dy) + 'px';
+    touch.vx = Math.abs(dx) > 10 ? dx / m : 0;
+    touch.vy = Math.abs(dy) > 10 ? dy / m : 0;
+    var dir = 0;
+    if (dy < -26) dir = 1; else if (dy > 26) dir = 2; else if (dx < -26) dir = 3; else if (dx > 26) dir = 4;
+    if (dir && dir !== touch.lastDir) pressed[['', '__up', '__down', '__left', '__right'][dir]] = true;
+    touch.lastDir = dir;
+  }
+  stick.addEventListener('pointerdown', function (e) {
+    Snd.unlock(); sid = e.pointerId; stick.setPointerCapture(sid);
+    var r = stick.getBoundingClientRect(); cx = r.left + r.width / 2; cy = r.top + r.height / 2; moveStick(e);
+  });
+  stick.addEventListener('pointermove', function (e) { if (e.pointerId === sid) moveStick(e); });
+  function endStick(e) { if (e.pointerId !== sid) return; sid = null; touch.vx = touch.vy = 0; touch.lastDir = 0; knob.style.left = '40px'; knob.style.top = '40px'; }
+  stick.addEventListener('pointerup', endStick);
+  stick.addEventListener('pointercancel', endStick);
+  function btn(id, down, up) {
+    var b = document.getElementById(id);
+    b.addEventListener('pointerdown', function (e) { e.preventDefault(); Snd.unlock(); down(); });
+    if (up) { b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up); b.addEventListener('pointerleave', up); }
+  }
+  btn('bA', function () { pressed.__a = true; });
+  btn('bMenu', function () { pressed.__menu = true; });
+  btn('bRun', function () { touch.run = true; }, function () { touch.run = false; });
+})();
+
+// clicks and taps on the canvas hit UI rectangles registered during the last frame
+var uiHits = [];
+cvs.addEventListener('pointerdown', function (e) {
+  Snd.unlock();
+  cvs.focus();
+  var r = cvs.getBoundingClientRect();
+  var x = (e.clientX - r.left) / r.width * VW, y = (e.clientY - r.top) / r.height * VH;
+  for (var i = uiHits.length - 1; i >= 0; i--) {
+    var h = uiHits[i];
+    if (x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h) { h.fn(); return; }
+  }
+  pressed.__tap = true;
+});
+
+// ---------- sound (all synthesized, nothing to download) ----------
+var Snd = (function () {
+  var ac = null, master = null, sfx = null, mus = null, muted = false, nbuf = null;
+  var next = 0, step = 0, mode = 'day', tense = false;
+  try { muted = localStorage.getItem('trail-muted') === '1'; } catch (e) {}
+  function unlock() {
+    if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
+    try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { ac = null; return; }
+    master = ac.createGain(); master.gain.value = muted ? 0 : 0.7; master.connect(ac.destination);
+    sfx = ac.createGain(); sfx.gain.value = 0.9; sfx.connect(master);
+    mus = ac.createGain(); mus.gain.value = 0.2; mus.connect(master);
+    next = ac.currentTime + 0.15;
+    setInterval(tick, 50);
+  }
+  function toneAt(t, f, d, type, v, f2, dest) {
+    var o = ac.createOscillator(), g = ac.createGain();
+    o.type = type || 'square';
+    o.frequency.setValueAtTime(f, t);
+    if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + d);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(v, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    o.connect(g); g.connect(dest || sfx);
+    o.start(t); o.stop(t + d + 0.03);
+  }
+  function tone(f, d, type, v, f2, delay) { if (ac && !muted) toneAt(ac.currentTime + (delay || 0), f, d, type, v, f2); }
+  function noise(d, v, freq, f2, delay) {
+    if (!ac || muted) return;
+    if (!nbuf) {
+      nbuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+      var ch = nbuf.getChannelData(0), r = mulberry32(9);
+      for (var i = 0; i < ch.length; i++) ch[i] = r() * 2 - 1;
+    }
+    var t = ac.currentTime + (delay || 0);
+    var s = ac.createBufferSource(); s.buffer = nbuf; s.loop = true;
+    var fl = ac.createBiquadFilter(); fl.type = 'lowpass';
+    fl.frequency.setValueAtTime(freq, t);
+    if (f2) fl.frequency.exponentialRampToValueAtTime(f2, t + d);
+    var g = ac.createGain();
+    g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    s.connect(fl); fl.connect(g); g.connect(sfx);
+    s.start(t); s.stop(t + d + 0.05);
+  }
+  // gentle pentatonic loop; the night version is sparser and minor
+  var DAY = {
+    mel: [12, null, 9, null, 7, null, 9, null, 4, null, 7, null, 9, null, null, null,
+          12, null, 14, null, 12, null, 9, null, 7, null, 4, null, 2, null, null, null],
+    bass: [0, -3, -7, -5]
+  };
+  var NIGHT = {
+    mel: [null, null, 4, null, null, null, 0, null, null, null, 2, null, -3, null, null, null,
+          null, null, 7, null, null, null, 4, null, 2, null, null, null, 0, null, null, null],
+    bass: [-3, -7, -5, -3]
+  };
+  function note(n) { return 261.63 * Math.pow(2, n / 12); }
+  function tick() {
+    if (!ac) return;
+    if (muted) { next = ac.currentTime + 0.1; return; }
+    var spb = 60 / 84 / 2;
+    while (next < ac.currentTime + 0.25) {
+      var seq = mode === 'night' ? NIGHT : DAY;
+      var m = seq.mel[step % seq.mel.length];
+      if (mode !== 'off') {
+        if (m !== null && !tense) toneAt(next, note(m), 0.34, 'triangle', 0.06, null, mus);
+        if (step % 8 === 0) toneAt(next, note(seq.bass[(step / 8 | 0) % seq.bass.length] - 24), 0.9, 'sine', tense ? 0.05 : 0.09, null, mus);
+      }
+      step = (step + 1) % 64;
+      next += spb;
+    }
+  }
+  var fx = {
+    blip: function () { tone(740, 0.025, 'square', 0.025); },
+    select: function () { tone(520, 0.05, 'square', 0.05); },
+    pickup: function () { tone(660, 0.06, 'square', 0.06); tone(990, 0.09, 'square', 0.06, null, 0.06); },
+    coin: function () { tone(988, 0.07, 'square', 0.06); tone(1319, 0.16, 'square', 0.06, null, 0.07); },
+    error: function () { tone(180, 0.16, 'square', 0.06, 120); },
+    salt: function () { noise(0.35, 0.25, 4000, 900); },
+    jar: function () { tone(1760, 0.5, 'sine', 0.12); tone(2637, 0.35, 'sine', 0.06, null, 0.03); },
+    freeze: function () { for (var i = 0; i < 6; i++) tone(2000 - i * 220, 0.12, 'triangle', 0.06, null, i * 0.05); },
+    splash: function () { noise(0.6, 0.3, 1200, 200); },
+    bubble: function () { tone(300, 0.08, 'sine', 0.08, 700); },
+    rocket: function () { noise(2.6, 0.35, 300, 3000); tone(80, 2.4, 'sawtooth', 0.05, 400); },
+    crash: function () { noise(0.9, 0.5, 900, 60); tone(70, 0.6, 'sine', 0.4, 30); },
+    hit: function () { noise(0.08, 0.3, 2500); tone(220, 0.06, 'square', 0.05); },
+    thud: function () { tone(90, 0.18, 'sine', 0.35, 40); },
+    heart: function () { tone(62, 0.13, 'sine', 0.4, 38); tone(58, 0.13, 'sine', 0.28, 34, 0.2); },
+    door: function () { tone(330, 0.06, 'square', 0.05); tone(247, 0.1, 'square', 0.05, null, 0.07); },
+    cast: function () { noise(0.25, 0.15, 2000, 500); },
+    bite: function () { tone(1200, 0.05, 'square', 0.07); tone(1500, 0.05, 'square', 0.07, null, 0.08); },
+    sleep: function () { [7, 4, 0, -5].forEach(function (n, i) { tone(note(n), 0.5, 'triangle', 0.07, null, i * 0.28); }); },
+    death: function () { [0, -1, -2, -3].forEach(function (n, i) { tone(note(n - 12), 0.7, 'triangle', 0.09, null, i * 0.45); }); },
+    win: function () { [0, 4, 7, 12, 16, 19, 24].forEach(function (n, i) { tone(note(n), 0.6, 'triangle', 0.07, null, i * 0.16); }); }
+  };
+  return {
+    unlock: unlock,
+    play: function (n) { if (fx[n]) fx[n](); },
+    mode: function (m) { mode = m; },
+    tense: function (t) { tense = t; },
+    toggleMute: function () {
+      muted = !muted;
+      if (master) master.gain.value = muted ? 0 : 0.7;
+      try { localStorage.setItem('trail-muted', muted ? '1' : '0'); } catch (e) {}
+      return muted;
+    },
+    isMuted: function () { return muted; }
+  };
+})();
+// ================= sprites =================
+var BODY_FRONT = [
+  '...HHHHHH...',
+  '..HHHHHHHH..',
+  '..HHHHHHHH..',
+  '..HkkkkkkH..',
+  '..kkekkekk..',
+  '..kkkkkkkk..',
+  '...kkkkkk...',
+  '..tttttttt..',
+  '.ttTttttTtt.',
+  '.kkTttttTkk.',
+  '.kkttttttkk.',
+  '...tttttt...',
+  '...pppppp...'
+];
+var BODY_BACK = [
+  '...HHHHHH...',
+  '..HHHHHHHH..',
+  '..HHHHHHHH..',
+  '..HHHHHHHH..',
+  '..HHHHHHHH..',
+  '..kHHHHHHk..',
+  '...kkkkkk...',
+  '..tttttttt..',
+  '.ttttttTttt.',
+  '.kkttttTtkk.',
+  '.kkttttttkk.',
+  '...tttttt...',
+  '...pppppp...'
+];
+var BODY_SIDE = [
+  '...HHHHHH...',
+  '..HHHHHHHH..',
+  '..HHHHHHHH..',
+  '..HHHkkkkk..',
+  '..HHkkkekk..',
+  '..HHkkkkkk..',
+  '...kkkkkk...',
+  '...tttttt...',
+  '..ttTttttt..',
+  '..ttTtttkk..',
+  '..tttttt....',
+  '...tttttt...',
+  '...pppppp...'
+];
+var LEGS = {
+  front: [['...pp..pp...', '...pp..pp...', '...ss..ss...'],
+          ['...pp..pp...', '...ss..pp...', '.......ss...'],
+          ['...pp..pp...', '...pp..ss...', '...ss.......']],
+  side:  [['...pppppp...', '...pp..pp...', '...ss..ss...'],
+          ['..pp....pp..', '..pp....pp..', '.ss......ss.'],
+          ['....pppp....', '....pppp....', '....ssss....']]
+};
+
+// hair styles change the head rows of all three views
+function styled(rows, style, view) {
+  rows = rows.slice();
+  function set(r, s) { rows[r] = s; }
+  if (style === 'long' && view !== 'back') {
+    set(3, view === 'side' ? '..HHHkkkkk..' : '.HHkkkkkkHH.');
+    set(4, view === 'side' ? '.HHHkkkekk..' : '.HkkekkekkH.');
+    set(5, view === 'side' ? '.HHHkkkkkk..' : '.HkkkkkkkkH.');
+    set(6, view === 'side' ? '.HH.kkkkk...' : '.H.kkkkkk.H.');
+  }
+  if (style === 'long' && view === 'back') {
+    set(5, '..HHHHHHHH..'); set(6, '..HHHHHHHH..');
+  }
+  if (style === 'bald') {
+    set(0, '............'); set(1, '...kkkkkk...'); set(2, '..kkkkkkkk..');
+    if (view === 'front') set(3, '..kkkkkkkk..');
+    if (view === 'back') { set(3, '..kkkkkkkk..'); set(4, '..kkkkkkkk..'); set(5, '..kkkkkkkk..'); }
+    if (view === 'side') { set(3, '..kkkkkkkk..'); set(4, '..kkkkkekk..'); set(5, '..kkkkkkkk..'); }
+  }
+  if (style === 'beard' && view !== 'back') {
+    set(5, view === 'side' ? '..HHkkBBBB..' : '..kBBBBBBk..');
+    set(6, view === 'side' ? '...kBBBBB...' : '...BBBBBB...');
+  }
+  if (style === 'hat') {
+    set(0, '...XXXXXX...'); set(1, '...XXXXXX...'); set(2, '.XXXXXXXXXX.');
+    if (view === 'front') set(3, '..kkkkkkkk..');
+  }
+  return rows;
+}
+
+function buildCharacter(pal, style, kid) {
+  var p = Object.assign({ e: '#222222', s: '#2a2422', B: pal.H, X: '#1d1b22' }, pal);
+  var out = {};
+  ['front', 'back', 'side'].forEach(function (view) {
+    var base = view === 'front' ? BODY_FRONT : view === 'back' ? BODY_BACK : BODY_SIDE;
+    var head = styled(base, style, view);
+    var legs = LEGS[view === 'side' ? 'side' : 'front'];
+    out[view] = legs.map(function (l) {
+      var rows = head.concat(l);
+      if (kid) rows = rows.filter(function (r, i) { return i !== 2 && i !== 11 && i !== 13; });
+      return spriteFromRows(rows, p);
+    });
+  });
+  out.sideL = out.side.map(flipX);
+  out.h = kid ? 13 : 16;
+  return out;
+}
+
+// 16x16 portraits for the dialogue box
+function buildPortrait(pal, style) {
+  var rows = [
+    '....HHHHHHHH....',
+    '...HHHHHHHHHH...',
+    '..HHHHHHHHHHHH..',
+    '..HHkkkkkkkkHH..',
+    '..HkkkkkkkkkkH..',
+    '..kkkeekkeekkk..',
+    '..kkkeekkeekkk..',
+    '..kkkkkkkkkkkk..',
+    '...kkkkkkkkkk...',
+    '...kkkkwwkkkk...',
+    '...kkkkkkkkkk...',
+    '....kkrrrrkk....',
+    '....kkkkkkkk....',
+    '.....tttttt.....',
+    '....tttttttt....',
+    '...tttttttttt...'
+  ];
+  if (style === 'long') for (var i = 3; i <= 12; i++) rows[i] = '.H' + rows[i].slice(2, 14) + 'H.';
+  if (style === 'bald') {
+    rows[0] = '................'; rows[1] = '.....kkkkkk.....'; rows[2] = '...kkkkkkkkkk...';
+    rows[3] = '..kkkkkkkkkkkk..'; rows[4] = '..kkkkkkkkkkkk..';
+  }
+  if (style === 'beard') {
+    rows[9] = '...kBBBwwBBBk...'; rows[10] = '...BBBBBBBBBB...'; rows[11] = '....BBrrrrBB....'; rows[12] = '.....BBBBBB.....';
+  }
+  if (style === 'hat') {
+    rows[0] = '....XXXXXXXX....'; rows[1] = '....XXXXXXXX....'; rows[2] = '.XXXXXXXXXXXXXX.';
+    rows[3] = '..kkkkkkkkkkkk..'; rows[5] = '..kkkXXkkXXkkk..'; rows[6] = '..kkkkkkkkkkkk..';
+  }
+  var p = Object.assign({ e: '#222222', w: '#d9a98a', r: '#b86a5a', B: pal.H, X: '#1d1b22' }, pal);
+  return spriteFromRows(rows, p);
+}
+
+var SPR = {};
+SPR.player = buildCharacter({ H: '#6b3f20', k: '#f1c9a5', t: '#3a72c4', T: '#2c5799', p: '#2f2f4f' }, 'short');
+SPR.playerPortrait = buildPortrait({ H: '#6b3f20', k: '#f1c9a5', t: '#3a72c4' }, 'short');
+
+var SNAIL_ROWS = [
+  '...sssss......',
+  '..sSSSSSs.....',
+  '.sSShhhSSs.e.e',
+  '.sShssshSs.b.b',
+  '.sShsSshSs.b.b',
+  '.sShsssShs.b.b',
+  '.sSShhhSSsbbbb',
+  '..sSSSSSsbbbbb',
+  '...bbbbbbbbbb.',
+  '....dddddddd..'
+];
+var SNAIL_PAL = { s: '#d9853b', S: '#8a4b1f', h: '#f2b46b', b: '#b9d86c', d: '#7fa03f', e: '#222222' };
+SPR.snailR = spriteFromRows(SNAIL_ROWS, SNAIL_PAL);
+SPR.snailR2 = spriteFromRows(SNAIL_ROWS.map(function (r, i) { return i >= 8 ? '.' + r.slice(0, r.length - 1) : r; }), SNAIL_PAL);
+SPR.snailL = flipX(SPR.snailR);
+SPR.snailL2 = flipX(SPR.snailR2);
+SPR.snailIcon = spriteFromRows(['..ssss...', '.sSSSSs..', '.sShhSs.e', '.sSSSSs.b', '..bbbbbbb', '...ddddd.'], SNAIL_PAL);
+
+// items: world pickups and hotbar icons share these
+SPR.item = {
+  mushroom: spriteFromRows(['..rrrr..', '.rwrrwr.', 'rrrrrrrr', '.rrwrrr.', '...ss...', '...ss...', '..ssss..'], { r: '#c8483c', w: '#ffffff', s: '#efe4c8' }),
+  berry: spriteFromRows(['...gg...', '..g..g..', '.pp..pp.', 'pPpp.pPp', '.pp.pp..', '...pPpp.', '....pp..'], { g: '#3f7a32', p: '#7b3fb0', P: '#b58ae0' }),
+  shell: spriteFromRows(['...pp...', '..pPPp..', '.pPpPPp.', 'pPpPpPPp', 'pppppppp', '.p.p.p..'], { p: '#f0a8a0', P: '#fce0d8' }),
+  sand: spriteFromRows(['....yy......', '..yyYyyy....', '.yyyyyYyyy..', 'yyYyyyyyyyyy'], { y: '#d8c080', Y: '#f2e2b0' }),
+  scrap: spriteFromRows(['.mm.....', 'mMmm.m..', '.mmMmmm.', '..mmMmm.', '.m.mmm..', '....m...'], { m: '#7a7f8a', M: '#b8bec8' }),
+  crystal: spriteFromRows(['...c....', '..cCc.c.', '..cCccC.', '.cCccCc.', '.cccCcc.', '..cccc..'], { c: '#4fc3d8', C: '#c8f4ff' }),
+  ice: spriteFromRows(['.iiiiii.', 'iIIiiiIi', 'iIiiiiii', 'iiiiIiii', 'iiiiiiIi', '.iiiiii.'], { i: '#9ad6f2', I: '#e8faff' }),
+  fish: spriteFromRows(['........', '.ffff..f', 'fFffffff', 'fefffff.', '.ffff..f'], { f: '#6a8fb0', F: '#a8c8e0', e: '#222222' }),
+  ball: spriteFromRows(['.rrr.', 'rwwrr', 'rrrrr', 'rrwrr', '.rrr.'], { r: '#e04040', w: '#ffffff' }),
+  salt: spriteFromRows(['..bbbb..', '.bwwwwb.', '.bwwwwb.', 'bwwSwwwb', 'bwwwwwwb', 'bwwwwwwb', '.bbbbbb.'], { b: '#8a7a60', w: '#f4f0e8', S: '#c8c0b0' }),
+  jar: spriteFromRows(['..cccc..', '..kkkk..', '.g....g.', 'g.wg...g', 'g.w....g', 'g......g', '.gggggg.'], { c: '#9c6d43', k: '#7d5533', g: '#a8d8e8', w: '#ffffff' }),
+  bread: spriteFromRows(['..bbbb..', '.bBBBBb.', 'bBbBBbBb', 'bbbbbbbb', '.bbbbbb.'], { b: '#b8783a', B: '#e0a860' }),
+  tent: spriteFromRows(['....o....', '...oOo...', '..oOOOo..', '.oOOdOOo.', 'oOOOdOOOo', 'ooooooooo'], { o: '#4f7a3a', O: '#6f9a4a', d: '#2a3a20' })
+};
+// ================= world: tiles, generation, objects =================
+var T = { GRASS: 0, FLOWER: 1, PATH: 2, SAND: 3, WATER: 4, DEEP: 5, CLIFF: 6, STONE: 7, SNOW: 8, FLOOR: 9, PIER: 10, FARM: 11, PAD: 12 };
+var SOLID_TILE = {}; SOLID_TILE[T.WATER] = 1; SOLID_TILE[T.DEEP] = 1; SOLID_TILE[T.CLIFF] = 1;
+var map = new Uint8Array(MAP_W * MAP_H);
+var solid = new Uint8Array(MAP_W * MAP_H);
+var reserved = new Uint8Array(MAP_W * MAP_H);
+var objects = [];
+var spots = { mushroom: [], berry: [], shell: [], sand: [], scrap: [] };
+var groundCanvas = makeCanvas(MAP_W * TILE, MAP_H * TILE);
+var trailCanvas = makeCanvas(MAP_W * TILE, MAP_H * TILE);
+
+function inMap(x, y) { return x >= 0 && y >= 0 && x < MAP_W && y < MAP_H; }
+function getT(x, y) { return inMap(x, y) ? map[y * MAP_W + x] : T.DEEP; }
+function setT(x, y, t) { if (inMap(x, y)) map[y * MAP_W + x] = t; }
+function isSolidTile(x, y) { return !inMap(x, y) || solid[y * MAP_W + x] === 1; }
+function isSolidPx(px, py) { return isSolidTile(Math.floor(px / TILE), Math.floor(py / TILE)); }
+function shoreY(x) { return 64 + Math.round(Math.sin(x * 0.23) * 1.2 + Math.sin(x * 0.071 + 1) * 1.3); }
+function mtnX(y) { return 70 + Math.round(Math.sin(y * 0.45) * 1.5); }
+function mtnY(x) { return 30 + Math.round(Math.sin(x * 0.35) * 1.2); }
+function inMountain(x, y) { return x >= mtnX(y) && y <= mtnY(x); }
+
+var PATHS = [
+  [[26, 38.5], [74, 38.5]],
+  [[43.5, 20], [43.5, 61]],
+  [[43.5, 22], [50, 19.5]],
+  [[26, 38.5], [20, 30], [14, 20], [11, 9]],
+  [[11, 9], [11, 1]], [[11, 9], [1, 9]], [[11, 9], [22, 6]],
+  [[74, 38.5], [76.5, 31], [77, 22]],
+  [[74, 38.5], [82, 44], [86, 49]],
+  [[43.5, 60], [50.5, 63]],
+  [[61.5, 38.5], [61.5, 30]]
+];
+function distToPaths(x, y) {
+  var best = 99;
+  PATHS.forEach(function (pl) {
+    for (var i = 0; i < pl.length - 1; i++) {
+      var a = pl[i], b = pl[i + 1], dx = b[0] - a[0], dy = b[1] - a[1];
+      var t = clamp(((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy), 0, 1);
+      best = Math.min(best, dist(x, y, a[0] + dx * t, a[1] + dy * t));
+    }
+  });
+  return best;
+}
+
+// ---------- pixel drawing helpers ----------
+function px(g, x, y, w, h, c) { g.fillStyle = c; g.fillRect(x, y, w, h); }
+function disc(g, cx, cy, rx, ry, c) {
+  g.fillStyle = c;
+  for (var dy = -ry; dy <= ry; dy++) {
+    var hw = Math.round(rx * Math.sqrt(Math.max(0, 1 - (dy / (ry + 0.5)) * (dy / (ry + 0.5)))));
+    if (hw > 0) g.fillRect(cx - hw, cy + dy, hw * 2, 1);
+  }
+}
+
+// ---------- object art ----------
+var ART = {};
+(function buildArt() {
+  var c, g, r;
+  c = makeCanvas(32, 36); g = c.getContext('2d');
+  disc(g, 17, 32, 12, 3, 'rgba(20,40,20,0.35)');
+  px(g, 13, 22, 6, 13, '#6e4a2a'); px(g, 16, 22, 3, 13, '#4f3320');
+  disc(g, 16, 13, 14, 12, '#2f6f36'); disc(g, 13, 11, 11, 9, '#3f8f47'); disc(g, 11, 8, 6, 4, '#4fa257');
+  r = mulberry32(4);
+  for (var i = 0; i < 14; i++) px(g, 5 + Math.floor(r() * 20), 3 + Math.floor(r() * 18), 2, 1, i % 2 ? '#55a85a' : '#276030');
+  ART.oak = c;
+  c = makeCanvas(22, 34); g = c.getContext('2d');
+  disc(g, 11, 31, 8, 2, 'rgba(20,40,20,0.35)');
+  px(g, 9, 26, 4, 7, '#5e3d22');
+  for (var y = 0; y < 27; y++) {
+    var hw = Math.round((y % 9) * 0.9 + y * 0.25) + 1;
+    px(g, 11 - hw, y, hw * 2, 1, y % 9 < 2 ? '#3c7a4a' : '#24583a');
+    if (y % 9 > 3) px(g, 11 - hw, y, 2, 1, '#1b4430');
+  }
+  ART.pine = c;
+  c = makeCanvas(16, 13); g = c.getContext('2d');
+  disc(g, 8, 11, 7, 1, 'rgba(0,0,0,0.25)');
+  disc(g, 8, 7, 7, 5, '#7c808a'); disc(g, 7, 6, 5, 3, '#9a9ea8'); px(g, 5, 4, 3, 1, '#b8bcc4'); px(g, 9, 9, 4, 1, '#5e626c');
+  ART.rock = c;
+  c = makeCanvas(16, 16); g = c.getContext('2d');
+  disc(g, 8, 14, 7, 1, 'rgba(0,0,0,0.25)');
+  disc(g, 8, 10, 7, 5, '#6e727c'); disc(g, 7, 9, 5, 3, '#8a8e98');
+  [[4, 3, 3, 7], [8, 1, 3, 9], [11, 5, 2, 5]].forEach(function (s) { px(g, s[0], s[1], s[2], s[3], '#4fc3d8'); px(g, s[0], s[1], 1, s[3] - 1, '#c8f4ff'); });
+  ART.crystal = c;
+  c = makeCanvas(16, 16); g = c.getContext('2d');
+  px(g, 1, 3, 14, 12, '#7cc4e4'); px(g, 1, 3, 14, 3, '#c8ecfa'); px(g, 2, 6, 2, 7, '#e8faff'); px(g, 11, 8, 3, 1, '#e8faff'); px(g, 1, 14, 14, 1, '#5aa0c4');
+  ART.ice = c;
+  c = makeCanvas(14, 30); g = c.getContext('2d');
+  disc(g, 7, 28, 6, 1, 'rgba(0,0,0,0.25)');
+  px(g, 2, 6, 10, 22, '#c8c0ae'); px(g, 2, 6, 3, 22, '#e0d8c6'); px(g, 10, 6, 2, 22, '#9c9484');
+  px(g, 0, 26, 14, 3, '#a8a090'); px(g, 3, 3, 4, 3, '#c8c0ae'); px(g, 7, 5, 4, 1, '#c8c0ae'); px(g, 5, 14, 3, 2, '#6f9a4a');
+  ART.pillar = c;
+  c = makeCanvas(7, 26); g = c.getContext('2d');
+  px(g, 3, 6, 1, 19, '#3a3530'); px(g, 1, 24, 5, 2, '#3a3530'); px(g, 1, 1, 5, 5, '#3a3530'); px(g, 2, 2, 3, 3, '#ffd766');
+  ART.lamp = c;
+  c = makeCanvas(16, 10); g = c.getContext('2d');
+  px(g, 2, 0, 3, 10, '#7d5533'); px(g, 11, 0, 3, 10, '#7d5533'); px(g, 0, 2, 16, 2, '#b58b5c'); px(g, 0, 6, 16, 2, '#b58b5c');
+  ART.fence = c;
+  c = makeCanvas(20, 20); g = c.getContext('2d');
+  px(g, 2, 8, 16, 10, '#8a8e98'); px(g, 2, 8, 16, 2, '#b8bcc4'); px(g, 5, 10, 10, 5, '#2b5f9e');
+  px(g, 3, 0, 2, 9, '#6e4a2a'); px(g, 15, 0, 2, 9, '#6e4a2a'); px(g, 1, 0, 18, 2, '#9c3c31');
+  ART.well = c;
+  c = makeCanvas(14, 16); g = c.getContext('2d');
+  px(g, 6, 5, 2, 11, '#6e4a2a'); px(g, 0, 1, 14, 6, '#b58b5c'); px(g, 0, 1, 14, 1, '#d8b080'); px(g, 2, 3, 10, 1, '#6e4a2a');
+  ART.sign = c;
+  c = makeCanvas(48, 48); g = c.getContext('2d');
+  px(g, 0, 0, 48, 48, '#8a8f9a'); px(g, 2, 2, 44, 44, '#a0a6b0');
+  for (var k = 0; k < 48; k += 6) { px(g, k, 0, 3, 2, '#e8c040'); px(g, k, 46, 3, 2, '#e8c040'); px(g, 0, k, 2, 3, '#e8c040'); px(g, 46, k, 2, 3, '#e8c040'); }
+  disc(g, 24, 24, 12, 12, '#6e737c'); disc(g, 24, 24, 9, 9, '#8a8f9a');
+  ART.pad = c;
+  c = makeCanvas(14, 40); g = c.getContext('2d');
+  px(g, 4, 4, 6, 30, '#e8e4dc'); px(g, 4, 4, 2, 30, '#ffffff'); px(g, 5, 0, 4, 4, '#c8483c'); px(g, 6, 12, 2, 3, '#4fc3d8');
+  px(g, 0, 26, 4, 10, '#c8483c'); px(g, 10, 26, 4, 10, '#c8483c'); px(g, 5, 34, 4, 4, '#ffb640');
+  ART.rocket = c;
+})();
+
+function drawBuilding(w, h, o) {
+  var W = w * TILE, H = h * TILE + 14, c = makeCanvas(W, H), g = c.getContext('2d');
+  var roofH = Math.round(H * 0.5);
+  if (o.chimney) { px(g, W - 16, 0, 7, 12, '#707070'); px(g, W - 17, 0, 9, 2, '#8c8c8c'); }
+  px(g, 3, roofH, W - 6, H - roofH - 1, o.wall);
+  px(g, 3, roofH, 2, H - roofH - 1, o.trim); px(g, W - 5, roofH, 2, H - roofH - 1, o.trim);
+  px(g, 3, H - 3, W - 6, 2, 'rgba(0,0,0,0.25)');
+  for (var y = 4; y < roofH + 2; y++) {
+    var inset = Math.max(0, Math.round((roofH + 2 - y) * 0.35) - 2);
+    px(g, inset, y, W - inset * 2, 1, (y % 4 === 3) ? o.roofDark : o.roof);
+  }
+  px(g, 0, roofH + 1, W, 2, o.roofDark);
+  var dx = Math.round(W / 2 - 5);
+  px(g, dx - 1, H - 16, 12, 15, o.trim); px(g, dx, H - 15, 10, 14, o.door || '#6e4726'); px(g, dx + 7, H - 8, 1, 1, '#f0c860');
+  var wy = roofH + 6;
+  [10, W - 22].forEach(function (wx) {
+    if (wx + 12 > dx - 2 && wx < dx + 12) return;
+    px(g, wx, wy, 12, 9, o.trim); px(g, wx + 1, wy + 1, 10, 7, '#9ad6f2'); px(g, wx + 5, wy + 1, 1, 7, o.trim); px(g, wx + 1, wy + 4, 10, 1, o.trim);
+  });
+  if (o.sign) {
+    px(g, dx - 8, roofH + 3, 26, 9, '#5a3a1a'); px(g, dx - 7, roofH + 4, 24, 7, '#f6dea8');
+    drawText(g, o.sign, dx + 5 - Math.round(textW(o.sign) / 2), roofH + 4, '#5a3a1a');
+  }
+  return c;
+}
+
+// ---------- generation ----------
+function addObject(kind, tx, ty, img, ox, oy, opts) {
+  opts = opts || {};
+  var o = { kind: kind, tx: tx, ty: ty, img: img, ox: ox, oy: oy, alive: true,
+    fw: opts.fw || 1, fh: opts.fh || 1, sortY: (ty + (opts.fh || 1)) * TILE - 2, solid: opts.solid !== false, hp: opts.hp || 0 };
+  for (var y = ty; y < ty + o.fh; y++) for (var x = tx; x < tx + o.fw; x++) if (inMap(x, y)) reserved[y * MAP_W + x] = 1;
+  objects.push(o);
+  return o;
+}
+function free(x, y) { return inMap(x, y) && !reserved[y * MAP_W + x] && !SOLID_TILE[getT(x, y)] && getT(x, y) !== T.PATH && getT(x, y) !== T.PIER && getT(x, y) !== T.PAD; }
+
+var BUILDINGS = {
+  cottage: { x: 36, y: 32, w: 4, h: 3, o: { wall: '#efe0bb', trim: '#7a5638', roof: '#b0483a', roofDark: '#8c362c', chimney: true } },
+  store: { x: 46, y: 32, w: 5, h: 3, o: { wall: '#e8d8b0', trim: '#5a3a1a', roof: '#3f7a8c', roofDark: '#2c5a68', sign: 'SHOP' } },
+  glass: { x: 31, y: 42, w: 4, h: 3, o: { wall: '#dfe8e8', trim: '#5a6a70', roof: '#7a5aa0', roofDark: '#5a3f7a', sign: 'GLASS' } },
+  smithy: { x: 50, y: 42, w: 5, h: 3, o: { wall: '#a8a090', trim: '#4a4038', roof: '#4a4a52', roofDark: '#33333a', sign: 'SMITH', chimney: true } },
+  workshop: { x: 64, y: 34, w: 5, h: 3, o: { wall: '#c8b890', trim: '#6a5030', roof: '#c88a2a', roofDark: '#9a6a1a', sign: 'OTTO' } },
+  library: { x: 83, y: 44, w: 6, h: 4, o: { wall: '#c8c0ae', trim: '#7a7264', roof: '#5a6a4a', roofDark: '#3f4c33', sign: 'BOOKS' } }
+};
+function doorOf(b) { return { x: (b.x + b.w / 2) * TILE, y: (b.y + b.h) * TILE + 6 }; }
+var PAD = { x: 60, y: 27, cx: 61.5 * TILE, cy: 28.5 * TILE };
+
+function generateWorld() {
+  var rng = mulberry32(2026);
+  var x, y, i;
+  for (y = 0; y < MAP_H; y++) for (x = 0; x < MAP_W; x++) setT(x, y, hash2(x, y, 11) < 0.05 ? T.FLOWER : T.GRASS);
+  for (x = 0; x < MAP_W; x++) {
+    var sy = shoreY(x);
+    for (y = sy - 3; y < MAP_H; y++) setT(x, y, y <= sy ? T.SAND : y <= sy + 2 ? T.WATER : T.DEEP);
+  }
+  for (y = 0; y < MAP_H; y++) for (x = 0; x < MAP_W; x++) {
+    var e = ((x - 56) / 9) * ((x - 56) / 9) + ((y - 13) / 5.5) * ((y - 13) / 5.5);
+    if (e < 1) setT(x, y, T.WATER); else if (e < 1.5) setT(x, y, T.SAND);
+  }
+  for (y = 0; y < MAP_H; y++) for (x = 0; x < MAP_W; x++) {
+    if (!inMountain(x, y)) continue;
+    var edge = !inMountain(x - 1, y) || !inMountain(x, y + 1);
+    var gap = (y >= mtnY(x) - 1 && x >= 75 && x <= 79) || (x <= mtnX(y) + 1 && y >= 8 && y <= 11);
+    setT(x, y, edge && !gap ? T.CLIFF : (x >= 84 && y <= 11 ? T.SNOW : T.STONE));
+  }
+  for (y = 0; y < MAP_H; y++) for (x = 0; x < MAP_W; x++) {
+    if (getT(x, y) === T.STONE && vnoise(x, y, 3, 5) > 0.78) setT(x, y, T.CLIFF);
+    if (x >= 76 && x <= 95 && y >= 40 && y <= 57 && vnoise(x, y, 4, 7) > 0.42) setT(x, y, T.FLOOR);
+  }
+  for (y = 33; y <= 36; y++) for (x = 30; x <= 34; x++) setT(x, y, T.FARM);
+  for (y = PAD.y; y < PAD.y + 3; y++) for (x = PAD.x; x < PAD.x + 3; x++) setT(x, y, T.PAD);
+  PATHS.forEach(function (pl) {
+    for (var s = 0; s < pl.length - 1; s++) {
+      var a = pl[s], b = pl[s + 1], n = Math.ceil(dist(a[0], a[1], b[0], b[1]) * 4);
+      for (var k = 0; k <= n; k++) {
+        var qx = lerp(a[0], b[0], k / n), qy = lerp(a[1], b[1], k / n);
+        for (var oy = -1; oy <= 1; oy++) for (var ox = -1; ox <= 1; ox++) {
+          if (ox * ox + oy * oy > 1.2) continue;
+          var tx = Math.floor(qx + ox * 0.9), ty = Math.floor(qy + oy * 0.9), t = getT(tx, ty);
+          if (t === T.WATER || t === T.DEEP || t === T.PAD) continue;
+          setT(tx, ty, T.PATH);
+        }
+      }
+    }
+  });
+  for (y = shoreY(50) - 1; y <= 76; y++) { setT(50, y, T.PIER); setT(51, y, T.PIER); }
+
+  Object.keys(BUILDINGS).forEach(function (k) {
+    var b = BUILDINGS[k];
+    b.obj = addObject('building', b.x, b.y, drawBuilding(b.w, b.h, b.o), 0, -14, { fw: b.w, fh: b.h });
+    b.obj.name = k;
+    for (var yy = b.y - 1; yy <= b.y + b.h; yy++) for (var xx = b.x - 1; xx <= b.x + b.w; xx++) if (inMap(xx, yy)) reserved[yy * MAP_W + xx] = 1;
+  });
+  addObject('pad', PAD.x, PAD.y, ART.pad, 0, 0, { fw: 3, fh: 3, solid: false }).sortY = -1;
+  addObject('well', 46, 40, ART.well, -2, -4);
+  addObject('well', 8, 6, ART.well, -2, -4);
+  addObject('sign', 13, 7, ART.sign, 1, 0);
+  for (x = 30; x <= 35; x++) if (getT(x, 37) !== T.PATH) addObject('fence', x, 37, ART.fence, 0, 4);
+  [[41, 36], [47, 36], [40, 41], [56, 41], [60, 36], [69, 41], [42, 57], [80, 42]].forEach(function (p) {
+    if (free(p[0], p[1])) addObject('lamp', p[0], p[1], ART.lamp, 4, -10).light = true;
+  });
+
+  var clearings = [[14.5, 34.5, 5], [11, 9, 6], [22, 60, 3]];
+  function inClearing(x, y) { return clearings.some(function (c) { return dist(x, y, c[0], c[1]) < c[2]; }); }
+  for (y = 2; y < 62; y += 2) for (x = 1; x < 28; x += 2) {
+    var tx = x + (hash2(x, y, 3) < 0.5 ? 0 : 1), ty = y + (hash2(x, y, 4) < 0.5 ? 0 : 1);
+    var forestEdge = 23 + 3 * Math.sin(ty * 0.2);
+    if (tx > forestEdge || inClearing(tx, ty) || distToPaths(tx + 0.5, ty + 0.5) < 2) continue;
+    if (!free(tx, ty) || hash2(tx, ty, 5) > 0.72) continue;
+    if (hash2(tx, ty, 6) < 0.55) addObject('tree', tx, ty, ART.pine, -3, -18); else addObject('tree', tx, ty, ART.oak, -8, -20);
+  }
+  for (y = 1; y < MAP_H; y++) for (x = 1; x < MAP_W - 1; x++) {
+    var t = getT(x, y);
+    if (t !== T.GRASS && t !== T.FLOWER) continue;
+    if (x > 27 && x < 60 && y > 28 && y < 50) continue;
+    if (!free(x, y) || distToPaths(x + 0.5, y + 0.5) < 2.2 || inClearing(x, y)) continue;
+    if (hash2(x, y, 8) < 0.028) addObject('tree', x, y, hash2(x, y, 9) < 0.5 ? ART.pine : ART.oak, hash2(x, y, 9) < 0.5 ? -3 : -8, hash2(x, y, 9) < 0.5 ? -18 : -20);
+    else if (hash2(x, y, 10) < 0.006) addObject('rock', x, y, ART.rock, 0, 3);
+  }
+  var stoneFree = [], snowFree = [];
+  for (y = 0; y < MAP_H; y++) for (x = 0; x < MAP_W; x++) {
+    if (!free(x, y) || distToPaths(x + 0.5, y + 0.5) < 1.6) continue;
+    if (getT(x, y) === T.STONE) { if (hash2(x, y, 12) < 0.045) addObject('rock', x, y, ART.rock, 0, 3); else stoneFree.push([x, y]); }
+    if (getT(x, y) === T.SNOW) snowFree.push([x, y]);
+    if (getT(x, y) === T.FLOOR && hash2(x, y, 13) < 0.07) addObject('pillar', x, y, ART.pillar, 1, -14);
+  }
+  function pick(list, n, seed) {
+    var r = mulberry32(seed), out = [], copy = list.slice();
+    for (var j = 0; j < n && copy.length; j++) out.push(copy.splice(Math.floor(r() * copy.length), 1)[0]);
+    return out;
+  }
+  pick(stoneFree.filter(function (p) { return p[1] > 12 && free(p[0], p[1]); }), 11, 21).forEach(function (p) {
+    var o = addObject('crystal', p[0], p[1], ART.crystal, 0, 0, { hp: 3 }); o.maxHp = 3;
+  });
+  pick(snowFree.filter(function (p) { return free(p[0], p[1]); }), 8, 22).forEach(function (p) {
+    var o = addObject('ice', p[0], p[1], ART.ice, 0, 0, { hp: 2 }); o.maxHp = 2;
+  });
+
+  for (y = 0; y < MAP_H; y++) for (x = 0; x < MAP_W; x++) {
+    if (!free(x, y)) continue;
+    var tt = getT(x, y);
+    if ((tt === T.GRASS || tt === T.FLOWER) && x < 25 && y > 3 && y < 60) spots.mushroom.push([x, y]);
+    else if ((tt === T.GRASS || tt === T.FLOWER) && !(x > 27 && x < 60 && y > 28 && y < 50) && !inMountain(x, y)) spots.berry.push([x, y]);
+    if (tt === T.SAND && y > 50) { spots.shell.push([x, y]); spots.sand.push([x, y]); }
+    if (tt === T.FLOOR) spots.scrap.push([x, y]);
+  }
+  rebuildSolid();
+  renderGround();
+}
+
+function rebuildSolid() {
+  for (var i = 0; i < map.length; i++) solid[i] = SOLID_TILE[map[i]] ? 1 : 0;
+  objects.forEach(function (o) {
+    if (!o.solid || !o.alive) return;
+    for (var y = o.ty; y < o.ty + o.fh; y++) for (var x = o.tx; x < o.tx + o.fw; x++) if (inMap(x, y)) solid[y * MAP_W + x] = 1;
+  });
+}
+
+// ---------- ground rendering (once) ----------
+var TILE_COL = {};
+TILE_COL[T.GRASS] = ['#55a043', '#3f8232', '#67b352'];
+TILE_COL[T.FLOWER] = ['#55a043', '#3f8232', '#67b352'];
+TILE_COL[T.PATH] = ['#d9b77c', '#c49a5e', '#e6c890'];
+TILE_COL[T.SAND] = ['#e8d49a', '#d8c080', '#f4e4b4'];
+TILE_COL[T.WATER] = ['#3d7cc4', '#346cb0', '#5b9de0'];
+TILE_COL[T.DEEP] = ['#2b5f9e', '#24528a', '#3468a8'];
+TILE_COL[T.CLIFF] = ['#6b6f7a', '#4a4d56', '#8a8f9a'];
+TILE_COL[T.STONE] = ['#9a9486', '#8a8476', '#aaa496'];
+TILE_COL[T.SNOW] = ['#eef4f8', '#d4e2ec', '#ffffff'];
+TILE_COL[T.FLOOR] = ['#b8b0a0', '#9c9484', '#c8c0b0'];
+TILE_COL[T.PIER] = ['#9c6d43', '#7d5533', '#b58b5c'];
+TILE_COL[T.FARM] = ['#7a5230', '#5e3d22', '#8a6240'];
+TILE_COL[T.PAD] = ['#8a8f9a', '#6e737c', '#a0a6b0'];
+
+function renderGround() {
+  var g = groundCanvas.getContext('2d');
+  var FLOWERS = ['#fff6b0', '#ff9ec4', '#ffffff', '#ffd23f', '#b58ae0'];
+  for (var y = 0; y < MAP_H; y++) for (var x = 0; x < MAP_W; x++) {
+    var t = getT(x, y), c = TILE_COL[t], X = x * TILE, Y = y * TILE, r = mulberry32(x * 7919 + y * 104729);
+    px(g, X, Y, TILE, TILE, c[0]);
+    var n = t === T.CLIFF ? 0 : 6 + Math.floor(r() * 5);
+    for (var i = 0; i < n; i++) {
+      var sx = Math.floor(r() * 15), sy = Math.floor(r() * 15);
+      if (t === T.GRASS || t === T.FLOWER) { px(g, X + sx, Y + sy, 1, 1, c[1]); px(g, X + sx + 1, Y + sy + 1, 1, 1, c[1]); if (i % 3 === 0) px(g, X + sx, Y + sy, 2, 1, c[2]); }
+      else px(g, X + sx, Y + sy, i % 2 ? 2 : 1, 1, c[1 + (i % 2)]);
+    }
+    if (t === T.FLOWER) for (var f = 0; f < 3; f++) { var fx = 2 + Math.floor(r() * 12), fy = 2 + Math.floor(r() * 12); px(g, X + fx, Y + fy + 1, 1, 1, '#2f6b28'); px(g, X + fx, Y + fy, 1, 1, FLOWERS[Math.floor(r() * 5)]); }
+    if (t === T.CLIFF) { px(g, X, Y, 16, 3, c[2]); px(g, X, Y + 12, 16, 4, c[1]); px(g, X + 3 + Math.floor(r() * 8), Y + 5, 1, 5, c[1]); }
+    if (t === T.FLOOR) { px(g, X, Y + 7, 16, 1, c[1]); px(g, X + 7, Y, 1, 7, c[1]); px(g, X + 12, Y + 8, 1, 8, c[1]); if (r() < 0.3) px(g, X + 2, Y + 10, 3, 2, '#6f9a4a'); }
+    if (t === T.PIER) { for (var k = 0; k < 16; k += 4) px(g, X, Y + k + 3, 16, 1, c[1]); px(g, X, Y, 1, 16, c[1]); }
+    if (t === T.FARM) { for (var k2 = 2; k2 < 16; k2 += 5) { px(g, X, Y + k2, 16, 2, c[1]); px(g, X + 3, Y + k2 - 2, 2, 2, '#4f9a3e'); px(g, X + 10, Y + k2 - 2, 2, 2, '#4f9a3e'); } }
+    if (t === T.PATH) {
+      if (getT(x, y - 1) !== T.PATH && !SOLID_TILE[getT(x, y - 1)]) px(g, X, Y, 16, 1, '#b08d58');
+      if (getT(x, y + 1) !== T.PATH && !SOLID_TILE[getT(x, y + 1)]) px(g, X, Y + 15, 16, 1, '#b08d58');
+      if (getT(x - 1, y) !== T.PATH && !SOLID_TILE[getT(x - 1, y)]) px(g, X, Y, 1, 16, '#b08d58');
+      if (getT(x + 1, y) !== T.PATH && !SOLID_TILE[getT(x + 1, y)]) px(g, X + 15, Y, 1, 16, '#b08d58');
+    }
+    if ((t === T.WATER || t === T.DEEP) && !SOLID_TILE[getT(x, y - 1)] && getT(x, y - 1) !== T.PIER) { px(g, X, Y, 16, 2, '#cfe8f4'); px(g, X, Y + 2, 16, 2, c[2]); }
+    if (t === T.PIER && getT(x, y) === T.PIER && (getT(x - 1, y) === T.DEEP || getT(x - 1, y) === T.WATER)) px(g, X - 1, Y + 14, 1, 2, '#5e3d22');
+  }
+}
+// ================= entities: state, player, snail, npcs, pickups =================
+var DIFFS = [
+  { name: 'Cozy', speed: 5, night: 3 },
+  { name: 'Normal', speed: 7, night: 4 },
+  { name: 'Dread', speed: 10, night: 6 }
+];
+var DAY_LEN = 1200;          // game minutes from 6:00 to 2:00
+var MIN_PER_SEC = 3.4;       // game minutes per real second
+var METERS_PER_TILE = 5;
+
+var G;
+function freshState(diff) {
+  return {
+    state: 'play', day: 1, time: 0, gold: 1000000, diff: diff,
+    inv: { mushroom: 0, berry: 0, shell: 0, sand: 0, scrap: 0, crystal: 0, ice: 0, fish: 0, ball: 0, salt: 0, jar: 0, bread: 0 },
+    tools: { pickaxe: false, rod: false, boots: false, tent: false },
+    main: 0,
+    side: { mush: 0, shell: 0, fish: 0, cryst: 0, berry: 0, ball: 0 },
+    flags: {},
+    stats: { quests: 0, spent: 0, earned: 0, walked: 0 },
+    rocket: false
+  };
+}
+
+var player = { x: 0, y: 0, dir: 'down', moving: false, anim: 0, stamina: 100, rest: 0, fed: 0 };
+var snail = { x: 0, y: 0, state: 'chase', t: 0, facing: 1, anim: 0, deepT: 0, sx: 0, sy: 0, pts: [] };
+
+function resetActors() {
+  player.x = 38 * TILE + 8; player.y = 36 * TILE + 4; player.dir = 'down'; player.stamina = 100; player.fed = 0;
+  snail.x = 95 * TILE; snail.y = 66 * TILE; snail.state = 'chase'; snail.t = 0; snail.pts = []; snail.deepT = 0;
+  snail.sx = snail.x; snail.sy = snail.y;
+  trailCanvas.getContext('2d').clearRect(0, 0, trailCanvas.width, trailCanvas.height);
+}
+
+function snailDistTiles() { return dist(snail.x, snail.y, player.x, player.y - 3) / TILE; }
+function snailMeters() { return Math.max(0, Math.round((snailDistTiles() - 0.5) * METERS_PER_TILE)); }
+function hourOf(t) { return 6 + Math.floor(t / 60); }
+function clockText(t) {
+  var h = hourOf(t) % 24, m = Math.floor(t % 60 / 10) * 10;
+  return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
+}
+function nightAlpha(t) {
+  var h = 6 + t / 60;
+  if (h < 17.5) return 0;
+  if (h < 21) return (h - 17.5) / 3.5 * 0.68;
+  return 0.68;
+}
+
+// ---------- player ----------
+function blockedAt(x, y) {
+  return isSolidPx(x - 5, y - 5) || isSolidPx(x + 4, y - 5) || isSolidPx(x - 5, y) || isSolidPx(x + 4, y);
+}
+function updatePlayer(dt) {
+  var ix = Input.x(), iy = Input.y(), len = Math.sqrt(ix * ix + iy * iy);
+  if (len > 1) { ix /= len; iy /= len; }
+  var moving = len > 0.15;
+  var running = moving && Input.run() && player.stamina > 1;
+  var sp = 78 * (G.tools.boots ? 1.25 : 1) * (running ? 1.65 : 1);
+  if (player.fed > 0) player.fed -= dt;
+  if (running) {
+    if (player.fed <= 0) player.stamina = Math.max(0, player.stamina - 26 * dt);
+    player.rest = 0.7;
+  } else {
+    player.rest -= dt;
+    if (player.rest <= 0) player.stamina = Math.min(100, player.stamina + 15 * dt);
+  }
+  var ox = player.x, oy = player.y;
+  if (moving) {
+    var nx = player.x + ix * sp * dt, ny = player.y + iy * sp * dt;
+    if (!blockedAt(nx, player.y)) player.x = nx;
+    if (!blockedAt(player.x, ny)) player.y = ny;
+    player.x = clamp(player.x, 6, MAP_W * TILE - 6); player.y = clamp(player.y, 8, MAP_H * TILE - 2);
+    if (Math.abs(ix) > Math.abs(iy)) player.dir = ix < 0 ? 'left' : 'right'; else player.dir = iy < 0 ? 'up' : 'down';
+    player.anim += dt * (running ? 1.6 : 1);
+  }
+  player.moving = moving && (player.x !== ox || player.y !== oy);
+  G.stats.walked += dist(ox, oy, player.x, player.y) / TILE;
+}
+function frontTile() {
+  var fx = player.x, fy = player.y - 4;
+  if (player.dir === 'left') fx -= 12; else if (player.dir === 'right') fx += 12; else if (player.dir === 'up') fy -= 12; else fy += 12;
+  return { x: Math.floor(fx / TILE), y: Math.floor(fy / TILE) };
+}
+function charFrame(spr, dir, moving, anim) {
+  var f = moving ? [0, 1, 0, 2][Math.floor(anim * 8) % 4] : 0;
+  if (dir === 'up') return spr.back[f];
+  if (dir === 'left') return spr.sideL[f];
+  if (dir === 'right') return spr.side[f];
+  return spr.front[f];
+}
+
+// ---------- snail ----------
+function stampTrail(x, y) {
+  var g = trailCanvas.getContext('2d');
+  g.fillStyle = 'rgba(214,244,232,0.55)';
+  g.fillRect(Math.round(x) - 3, Math.round(y) - 2, 6, 3);
+  g.fillStyle = 'rgba(143,205,182,0.5)';
+  g.fillRect(Math.round(x) - 3, Math.round(y) + 1, 6, 1);
+  if (hash2(Math.round(x), Math.round(y), 3) < 0.3) { g.fillStyle = 'rgba(255,255,255,0.9)'; g.fillRect(Math.round(x) + (hash2(x | 0, 1, 1) < 0.5 ? -2 : 1), Math.round(y) - 1, 1, 1); }
+}
+function redrawTrail() {
+  trailCanvas.getContext('2d').clearRect(0, 0, trailCanvas.width, trailCanvas.height);
+  for (var i = 0; i < snail.pts.length; i += 2) stampTrail(snail.pts[i], snail.pts[i + 1]);
+}
+function moveSnailToward(tx, ty, distPx) {
+  var dx = tx - snail.x, dy = ty - snail.y, d = Math.sqrt(dx * dx + dy * dy);
+  if (d < 0.001) return 0;
+  var step = Math.min(distPx, d);
+  var n = Math.max(1, Math.ceil(step / 2));
+  for (var i = 1; i <= n; i++) {
+    snail.x += dx / d * step / n; snail.y += dy / d * step / n;
+    if (dist(snail.x, snail.y, snail.sx, snail.sy) >= 2) {
+      stampTrail(snail.x, snail.y);
+      snail.sx = snail.x; snail.sy = snail.y;
+      if (snail.pts.length < 60000) snail.pts.push(Math.round(snail.x), Math.round(snail.y));
+    }
+  }
+  if (Math.abs(dx) > 0.5) snail.facing = dx < 0 ? -1 : 1;
+  return d - step;
+}
+function snailInDeep() { return getT(Math.floor(snail.x / TILE), Math.floor(snail.y / TILE)) === T.DEEP; }
+function updateSnail(dt) {
+  if (snail.state === 'stopped') return;
+  if (snail.state !== 'chase') {
+    snail.t -= dt;
+    if (snail.t <= 0) snailRecovers();
+    return;
+  }
+  moveSnailToward(player.x, player.y - 3, DIFFS[G.diff].speed * dt);
+  snail.anim += dt;
+  if (snailInDeep()) {
+    snail.deepT += dt;
+    if (Math.floor(snail.anim * 3) !== Math.floor((snail.anim - dt) * 3)) Snd.play('bubble');
+  } else snail.deepT = 0;
+  if (dist(snail.x, snail.y, player.x, player.y - 3) < 9) die('It touched you.');
+}
+
+// ---------- npcs ----------
+var NPCS = {};
+function makeNpc(id, name, tx, ty, pal, style, opts) {
+  opts = opts || {};
+  var n = { id: id, name: name, x: tx * TILE, y: ty * TILE, hx: tx * TILE, hy: ty * TILE, dir: 'down', anim: 0, moving: false,
+    spr: buildCharacter(pal, style, opts.kid), portrait: buildPortrait(pal, style), wander: opts.wander || 0, wt: 0, gx: 0, gy: 0,
+    visible: opts.visible || function () { return true; } };
+  NPCS[id] = n;
+  return n;
+}
+function setupNpcs() {
+  makeNpc('marta', 'Marta', 45.5, 42.6, { H: '#d8d8d8', k: '#f1c9a5', t: '#7b4c8e', T: '#5e3a6e', p: '#4a3450' }, 'long');
+  makeNpc('hilde', 'Hilde', 51.6, 36.2, { H: '#c8783a', k: '#f4d0b0', t: '#3f7a8c', T: '#2c5a68', p: '#3b2f2a' }, 'long');
+  makeNpc('greta', 'Greta', 36.2, 46.4, { H: '#2a2a2a', k: '#d8a07a', t: '#e8e0d0', T: '#b8b0a0', p: '#5a6a70' }, 'short');
+  makeNpc('bram', 'Bram', 55.8, 46.2, { H: '#4a2a1a', k: '#e8b890', t: '#8a4a3a', T: '#6a3a2a', p: '#2f2f3a' }, 'beard');
+  makeNpc('pip', 'Pip', 40.5, 46.5, { H: '#e8c040', k: '#f4d0b0', t: '#e05a40', T: '#b84430', p: '#3a5a8a' }, 'short', { kid: true, wander: 3 });
+  makeNpc('oskar', 'Oskar', 51.4, 76.6, { H: '#b8b8b8', k: '#e0b090', t: '#e8c040', T: '#c8a030', p: '#3a4a6a' }, 'beard');
+  makeNpc('ansel', 'Ansel', 14.5, 35, { H: '#5a4a2a', k: '#e0b090', t: '#4f7a3a', T: '#3a5a2a', p: '#4a3a2a' }, 'hat');
+  makeNpc('otto', 'Otto', 69.8, 38.2, { H: '#e0e0e0', k: '#f1c9a5', t: '#c88a2a', T: '#9a6a1a', p: '#4a4038' }, 'bald');
+  makeNpc('ines', 'Ines', 87.6, 49.4, { H: '#3a2a4a', k: '#c89070', t: '#5a6a4a', T: '#3f4c33', p: '#2a2a3a' }, 'long');
+  makeNpc('stranger', 'The Stranger', 11.5, 10.2, { H: '#1d1b22', k: '#e8e0d8', t: '#1d1b22', T: '#000000', p: '#1d1b22' }, 'hat',
+    { visible: function () { return G.main >= 22 && G.time >= 960; } });
+}
+function updateNpcs(dt) {
+  Object.keys(NPCS).forEach(function (id) {
+    var n = NPCS[id];
+    n.moving = false;
+    if (n.wander) {
+      n.wt -= dt;
+      if (n.wt <= 0) {
+        n.wt = 2 + hash2(Math.floor(G.time), id.length, 5) * 3;
+        n.gx = n.hx + (hash2(Math.floor(G.time * 7), 1, 6) - 0.5) * n.wander * 2 * TILE;
+        n.gy = n.hy + (hash2(Math.floor(G.time * 7), 2, 6) - 0.5) * n.wander * 2 * TILE;
+      }
+      var dx = n.gx - n.x, dy = n.gy - n.y, d = Math.sqrt(dx * dx + dy * dy);
+      if (d > 2) {
+        var nx = n.x + dx / d * 22 * dt, ny = n.y + dy / d * 22 * dt;
+        if (!blockedAt(nx, ny)) { n.x = nx; n.y = ny; n.moving = true; n.anim += dt; }
+        else n.wt = 0;
+        n.dir = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'up' : 'down');
+      }
+    }
+    if (dist(n.x, n.y, player.x, player.y) < 40 && !n.moving) {
+      var ax = player.x - n.x, ay = player.y - n.y;
+      n.dir = Math.abs(ax) > Math.abs(ay) ? (ax < 0 ? 'left' : 'right') : (ay < 0 ? 'up' : 'down');
+    }
+  });
+}
+
+// ---------- pickups ----------
+var pickups = [];
+var ITEM_NAMES = { mushroom: 'Mushroom', berry: 'Berries', shell: 'Shell', sand: 'Sand', scrap: 'Scrap metal', crystal: 'Crystal', ice: 'Old ice', fish: 'Fish', ball: "Pip's ball", salt: 'Salt', jar: 'Big jar', bread: 'Bread' };
+function spawnPickups() {
+  pickups = [];
+  var r = mulberry32(G.day * 977 + 13);
+  function place(type, list, n) {
+    for (var i = 0; i < n && list.length; i++) {
+      var p = list[Math.floor(r() * list.length)];
+      pickups.push({ type: type, x: p[0] * TILE + 4 + Math.floor(r() * 8), y: p[1] * TILE + 8 + Math.floor(r() * 5), alive: true });
+    }
+  }
+  place('mushroom', spots.mushroom, 16);
+  place('berry', spots.berry, 18);
+  place('shell', spots.shell, 12);
+  place('sand', spots.sand, 12);
+  place('scrap', spots.scrap, 8);
+  if (G.side.ball === 1 && !G.inv.ball) pickups.push({ type: 'ball', x: 22 * TILE + 8, y: 60 * TILE + 8, alive: true });
+}
+function updatePickups() {
+  pickups.forEach(function (p) {
+    if (!p.alive || dist(p.x, p.y, player.x, player.y - 2) > 10) return;
+    p.alive = false;
+    G.inv[p.type] = (G.inv[p.type] || 0) + 1;
+    Snd.play('pickup');
+    toast('+1 ' + ITEM_NAMES[p.type]);
+    checkQuestProgress();
+  });
+}
+function respawnNodes() {
+  objects.forEach(function (o) { if (o.kind === 'crystal' || o.kind === 'ice') { o.alive = true; o.hp = o.maxHp; } });
+  rebuildSolid();
+}
+// ================= quests, dialogue, shops =================
+var MAIN = [
+  'Talk to Marta in the village square.',
+  "Buy salt at Hilde's shop.",
+  'Throw salt at the snail. Press 1 when it is close.',
+  'Tell Marta what happened.',
+  'Ask Greta the glassblower for a jar.',
+  'Bring Greta 10 sand from the beach and 60,000 g.',
+  'Trap the snail. Press 2 when it is close.',
+  'Wait.',
+  'Tell Marta about the jar.',
+  'Buy a pickaxe from Bram the smith.',
+  'Mine old ice in the snowy peaks (northeast).',
+  'Freeze the snail. Press 3 when it is close.',
+  'Wait for it to thaw.',
+  'Tell Marta it thawed.',
+  'Talk to Oskar at the end of the pier (south).',
+  'Stand on the pier. Let the snail walk into the deep sea.',
+  'Talk to Oskar.',
+  "Visit Otto's workshop, east of the village.",
+  'Bring Otto 5 scrap (ruins), 3 crystals (mountains) and 250,000 g.',
+  'Lure the snail onto the launch pad. Press E near the pad.',
+  'Wait.',
+  'Ask Ines at the old library (ruins, east) about the contract.',
+  'Have 1,000,000 g again.',
+  'Go to the crossroads (far northwest) between 22:00 and 2:00.'
+];
+var SIDE = {
+  mush: { who: 'Marta', need: 'mushroom', n: 5, pay: 40000, text: '5 mushrooms for Marta (forest, west)' },
+  shell: { who: 'Hilde', need: 'shell', n: 8, pay: 35000, text: '8 shells for Hilde (beach)' },
+  fish: { who: 'Oskar', need: 'fish', n: 3, pay: 45000, text: '3 fish for Oskar' },
+  cryst: { who: 'Bram', need: 'crystal', n: 6, pay: 80000, text: '6 crystals for Bram (mountains)' },
+  berry: { who: 'Ansel', need: 'berry', n: 10, pay: 30000, text: '10 berries for Ansel (meadows)' },
+  ball: { who: 'Pip', need: 'ball', n: 1, pay: 20000, text: "Pip's ball (somewhere near the south of the forest)" }
+};
+var PLURAL = { mushroom: 'mushrooms', berry: 'berries', shell: 'shells', fish: 'fish', crystal: 'crystals', scrap: 'pieces of scrap' };
+var SELL = { mushroom: 1500, berry: 600, shell: 1200, fish: 3000, crystal: 12000, scrap: 800 };
+
+function advance(to) {
+  if (G.main >= to) return;
+  G.main = to;
+  G.stats.quests++;
+  Snd.play('coin');
+  toast('Quest: ' + MAIN[to]);
+}
+function pay(n) { G.gold -= n; G.stats.spent += n; }
+function earn(n) { G.gold += n; G.stats.earned += n; Snd.play('coin'); }
+function checkQuestProgress() {
+  if (G.main === 1 && G.inv.salt > 0) advance(2);
+  if (G.main === 9 && G.tools.pickaxe) advance(10);
+  if (G.main === 10 && G.inv.ice > 0) advance(11);
+  if (G.main === 22 && G.gold >= 1000000) advance(23);
+}
+
+// offer or finish a side quest; returns lines to append, or null
+function sideTalk(key, offerLines) {
+  var q = SIDE[key], st = G.side[key];
+  if (st === 0) { G.side[key] = 1; if (key === 'ball') spawnPickups(); return offerLines.concat(['(Side quest: ' + q.text + ', ' + fmt(q.pay) + ' g)']); }
+  if (st === 1 && G.inv[q.need] >= q.n) {
+    G.inv[q.need] -= q.n; G.side[key] = 2; G.stats.quests++; earn(q.pay);
+    return ['That is all of them. Here, ' + fmt(q.pay) + ' g.'];
+  }
+  if (st === 1) return ['Still waiting on ' + q.text.split(' for ')[0].replace("Pip's ball (somewhere near the south of the forest)", 'my ball') + '. You have ' + (G.inv[q.need] || 0) + '.'];
+  return null;
+}
+
+function talk(id) {
+  var n = NPCS[id], L = [];
+  function say(lines, after) { openDialog(n, lines, after); }
+  switch (id) {
+    case 'marta':
+      if (G.main === 0) {
+        advance(1);
+        return say(['So you are the one with the million. And the snail.',
+          'Everyone in Mossbury knows the story. It is slow. It never stops. If it touches you, that is the end of it.',
+          'My grandmother said there are 247 steps to be rid of it. She was bad at counting.',
+          'Start with salt. Hilde sells it. Throw it when the snail is close. Very close.'].concat(sideTalk('mush', ['And if you pass through the forest, bring me five mushrooms.'])));
+      }
+      if (G.main === 3) { advance(4); return say(['It did not care, did it.', 'Then we trap it. Greta can blow glass big enough for a snail. Her shop is west of the square.']); }
+      if (G.main === 8) { advance(9); return say(['Somebody opened it. Of course somebody opened it.', 'Then freeze it. Bram the smith sells pickaxes, and there is old ice up in the peaks. Northeast, past the cliffs.']); }
+      if (G.main === 13) { advance(14); return say(['Thawed. Yes. Ice does that.', 'Oskar says the sea takes everything. He fishes at the end of the pier. South.']); }
+      L = sideTalk('mush', []) || [];
+      if (G.main >= 21) L.push('Twenty-four steps? My grandmother would be furious.');
+      else if (G.main < 3) L.push('Salt. Hilde. Very close.');
+      else L.push('Keep moving. That is the whole trick.');
+      return say(L);
+    case 'hilde':
+      if (G.side.shell === 0 && G.main >= 1) return say(sideTalk('shell', ['Before you buy anything: I need shells for the shop window. Eight of them.']), function () { openShop('hilde'); });
+      var sh = G.side.shell === 1 && G.inv.shell >= 8 ? sideTalk('shell', []) : null;
+      if (sh) return say(sh, function () { openShop('hilde'); });
+      return openShop('hilde');
+    case 'greta':
+      if (G.main < 4) return say(['Glass. Mostly bottles. Come back when you need something big.']);
+      if (G.main === 4) { advance(5); return say(['A jar big enough for a snail. I can do that.', 'I need ten sand from the beach, and the furnace costs 60,000 g to run that hot.']); }
+      if (G.main === 5) {
+        if (G.inv.sand >= 10 && G.gold >= 60000) {
+          G.inv.sand -= 10; pay(60000); G.inv.jar += 1; advance(6); Snd.play('jar');
+          return say(['Here. One big jar. Do not drop it.', 'Get close, then press 2.']);
+        }
+        return say(['Ten sand and 60,000 g. You have ' + G.inv.sand + ' sand and ' + fmt(G.gold) + ' g.']);
+      }
+      return openShop('greta');
+    case 'bram':
+      if (G.main < 9 && !G.tools.pickaxe) return say(['I make pickaxes. You do not need a pickaxe.', 'Yet.']);
+      if (!G.tools.pickaxe) return openShop('bram');
+      L = sideTalk('cryst', ['The pickaxe also cuts crystal. I pay well for it. Six, and I pay 80,000 g.']) || ['Hit rocks. Not people.'];
+      return say(L);
+    case 'pip':
+      if (G.main === 7 || G.main === 8) return say(['I opened the jar.', 'It looked sad.']);
+      L = sideTalk('ball', ['I lost my ball near the south end of the forest. I would go myself, but the snail.', 'I have 20,000 g saved. It is all my money.']);
+      return say(L || ['Is it true it follows you everywhere? Even to the toilet?']);
+    case 'oskar':
+      if (G.main === 14) {
+        G.tools.rod = true; advance(15);
+        return say(['The sea takes everything. Boats, rings, my brother.', 'Stand out here at the end of the pier. The snail will come straight for you. The water is deep.',
+          'Here, take my old rod while you wait. Face the water and press E to fish.']);
+      }
+      if (G.main === 15) return say(['Stay out here. Let it come.']);
+      if (G.main === 16) { advance(17); return say(['It walked on the bottom. I saw the bubbles.', 'Otto, east of the village, built a rocket once. Ask him.']); }
+      if (G.tools.rod) { L = sideTalk('fish', ['If you catch three fish, I buy them. 45,000 g.']) || ['Face the water, press E, wait for the bite, press E again.']; return say(L); }
+      return say(['Fish are biting. The snail is not a fish.']);
+    case 'ansel':
+      L = sideTalk('berry', ['Forty years in this forest. The snail came through twice. I moved twice.', 'Bring me ten berries for jam and I pay 30,000 g. They grow in the open meadows.']);
+      return say(L || ['The trees do not stop it. Nothing stops it. The trees just watch.']);
+    case 'otto':
+      if (G.main < 17) return say(['I am building a rocket. Nobody asked for a rocket.']);
+      if (G.main === 17) { advance(18); return say(['Someone asked for a rocket!', 'I need five scrap from the old ruins, three crystals from the mountains for the guidance, and 250,000 g for fuel.', 'Then we put your snail on the pad north of here and send it to space.']); }
+      if (G.main === 18) {
+        if (G.inv.scrap >= 5 && G.inv.crystal >= 3 && G.gold >= 250000) {
+          G.inv.scrap -= 5; G.inv.crystal -= 3; pay(250000); G.rocket = true; advance(19);
+          return say(['It is ready. The rocket is on the pad, north of the workshop.', 'Stand so the snail crawls onto the pad. Then press E near it.']);
+        }
+        return say(['Five scrap, three crystals, 250,000 g. You have ' + G.inv.scrap + ' scrap, ' + G.inv.crystal + ' crystals and ' + fmt(G.gold) + ' g.']);
+      }
+      if (G.main === 19) return say(['Pad is north. Snail on pad. E. Space.']);
+      if (G.main === 20) return say(['Gravity. I forgot about gravity.']);
+      if (G.main === 21 || G.main > 21) return say(['Ines at the old library reads old things. Maybe the snail came with a contract.']);
+      return say(['Rockets are hard.']);
+    case 'ines':
+      if (G.main < 21) return say(['This is a library. There is a snail outside, I assume.']);
+      if (G.main === 21) {
+        advance(22);
+        return say(['The contract. Yes, there is always a contract.', 'Here. "The snail does not follow the holder. The snail follows the money."',
+          '"It stops when the full sum is returned to the one who gave it, at the crossroads, between the tenth hour of the night and the second."',
+          'The full sum. One million. You have ' + fmt(G.gold) + ' g.', 'Also, it is twenty-four steps, not 247. Marta\'s grandmother added a seven.']);
+      }
+      return say(['The full sum. At the crossroads. At night. Contracts are very specific.']);
+    case 'stranger':
+      if (G.gold < 1000000) return say(['...', 'You are ' + fmt(1000000 - G.gold) + ' g short. Count again.']);
+      return say(['A million. All of it.', 'Most people spend it and keep running.'], function () { winGame(); });
+  }
+}
+
+// ---------- shops ----------
+function shopItems(who) {
+  if (who === 'hilde') {
+    var list = [
+      { label: 'Salt (3 throws)', price: 25000, buy: function () { G.inv.salt += 3; checkQuestProgress(); } },
+      { label: 'Bread (run without tiring)', price: 2000, buy: function () { G.inv.bread += 1; } }
+    ];
+    if (!G.tools.tent) list.push({ label: 'Tent (sleep anywhere)', price: 60000, buy: function () { G.tools.tent = true; } });
+    if (!G.tools.boots) list.push({ label: 'Running shoes', price: 120000, buy: function () { G.tools.boots = true; } });
+    Object.keys(SELL).forEach(function (k) {
+      if (G.inv[k] > 0) list.push({ label: 'Sell ' + G.inv[k] + ' ' + (G.inv[k] === 1 ? ITEM_NAMES[k].toLowerCase() : PLURAL[k]), price: -SELL[k] * G.inv[k], sell: k });
+    });
+    return list;
+  }
+  if (who === 'bram') return [{ label: 'Pickaxe', price: 90000, buy: function () { G.tools.pickaxe = true; checkQuestProgress(); } }];
+  if (who === 'greta') return [{ label: 'Big jar (needs 10 sand)', price: 40000, need: { sand: 10 }, buy: function () { G.inv.sand -= 10; G.inv.jar += 1; } }];
+  return [];
+}
+function shopBuy(who, item) {
+  if (item.sell) {
+    earn(-item.price);
+    G.inv[item.sell] = 0;
+    toast('Sold for ' + fmt(-item.price) + ' g');
+    checkQuestProgress();
+    return;
+  }
+  if (G.gold < item.price) { Snd.play('error'); toast('Not enough gold.'); return; }
+  if (item.need && G.inv.sand < item.need.sand) { Snd.play('error'); toast('You need 10 sand.'); return; }
+  pay(item.price); item.buy(); Snd.play('coin');
+  toast('Bought: ' + item.label);
+}
+var SHOP_GREETING = {
+  hilde: "Hilde's shop. The salt is artisanal. That is why it costs that much.",
+  bram: 'A pickaxe. Good steel. 90,000 g, because you have it.',
+  greta: 'Another jar? 40,000 g and ten sand.'
+};
+
+// ---------- using items on the snail ----------
+function useSlot(i) {
+  var d = snailDistTiles();
+  if (i === 1) {
+    if (!G.inv.salt) return nope('No salt. Hilde sells it.');
+    if (snail.state !== 'chase') return nope('The snail is busy.');
+    if (d > 3) return nope('Too far. It has to be close. That is the problem.');
+    G.inv.salt--; Snd.play('salt'); snail.state = 'salted'; snail.t = 4;
+    toast('The snail looks seasoned. Nothing else.');
+    if (G.main === 2) advance(3);
+  } else if (i === 2) {
+    if (!G.inv.jar) return nope('No jar. Greta can make one.');
+    if (snail.state !== 'chase') return nope('The snail is busy.');
+    if (d > 2.5) return nope('Closer. The jar has to go over it.');
+    G.inv.jar--; Snd.play('jar'); snail.state = 'jarred'; snail.t = 60;
+    toast('Got it. The snail is in the jar.');
+    if (G.main === 6) advance(7);
+  } else if (i === 3) {
+    if (!G.inv.ice) return nope('No ice. It is in the peaks, and you need a pickaxe.');
+    if (snail.state !== 'chase') return nope('The snail is busy.');
+    if (d > 3) return nope('Too far. The ice has to touch it.');
+    G.inv.ice--; Snd.play('freeze'); snail.state = 'frozen'; snail.t = 40;
+    toast('Frozen solid.');
+    if (G.main === 11) advance(12);
+  } else if (i === 4) {
+    if (!G.inv.bread) return nope('No bread. Hilde sells it.');
+    G.inv.bread--; player.stamina = 100; player.fed = 45; Snd.play('pickup');
+    toast('Bread. You can run for a while without tiring.');
+  } else if (i === 5) {
+    if (!G.tools.tent) return nope('No tent. Hilde sells one.');
+    askSleep('tent');
+  }
+}
+function nope(msg) { Snd.play('error'); toast(msg); }
+function snailRecovers() {
+  var was = snail.state;
+  snail.state = 'chase';
+  if (was === 'jarred') { toast('Somebody opened the jar. It was Pip.'); if (G.main === 7) advance(8); }
+  if (was === 'frozen') { toast('It thawed.'); if (G.main === 12) advance(13); }
+  if (was === 'orbit') {
+    var a = G.time * 1.7, r = 9 * TILE;
+    snail.x = clamp(player.x + Math.cos(a) * r, 8, MAP_W * TILE - 8);
+    snail.y = clamp(player.y + Math.sin(a) * r, 8, MAP_H * TILE - 8);
+    snail.sx = snail.x; snail.sy = snail.y;
+    Snd.play('crash'); shake = 0.6;
+    toast('It came back down. Closer.');
+    if (G.main === 20) advance(21);
+  }
+}
+function launchRocket() {
+  snail.state = 'orbit'; snail.t = 90; G.rocket = false;
+  Snd.play('rocket'); shake = 1.2;
+  toast('It is in orbit.');
+  rocketFx = 2.5;
+  if (G.main === 19) advance(20);
+}
+// ================= ui: panels, dialogue, menus, hud =================
+var INK = '#1a1410', CREAM = '#f5e9c8', PARCH = '#f6dea8', BARK = '#5a3a1a', BROWN = '#3b2314', RUST = '#9a5a2a', DANGER = '#e0503c';
+var ui = { dialog: null, choice: null, shop: null, toasts: [], prompt: null, sel: 0 };
+var shake = 0, rocketFx = 0;
+
+function panel(g, x, y, w, h) {
+  px(g, x + 2, y + 2, w, h, 'rgba(10,8,6,0.35)');
+  px(g, x, y, w, h, BARK); px(g, x + 2, y + 2, w - 4, h - 4, PARCH);
+  px(g, x + 2, y + 2, w - 4, 1, '#ffeec4'); px(g, x + 2, y + 2, 1, h - 4, '#ffeec4');
+  px(g, x + 2, y + h - 3, w - 4, 1, '#d9a860'); px(g, x + w - 3, y + 2, 1, h - 4, '#d9a860');
+}
+function darkBox(g, x, y, w, h, a) { px(g, x, y, w, h, 'rgba(26,20,16,' + (a || 0.78) + ')'); }
+function hitRect(x, y, w, h, fn) { uiHits.push({ x: x, y: y, w: w, h: h, fn: fn }); }
+
+function toast(msg) {
+  ui.toasts.push({ msg: msg, t: 3.6 });
+  if (ui.toasts.length > 3) ui.toasts.shift();
+}
+
+// ---------- dialogue ----------
+function openDialog(npc, lines, after) {
+  var pages = [], w = Math.min(VW - 16, 368) - 58;
+  lines.forEach(function (l) {
+    if (!l) return;
+    var wrapped = wrapText(l, w, 1);
+    for (var i = 0; i < wrapped.length; i += 4) pages.push(wrapped.slice(i, i + 4));
+  });
+  ui.dialog = { npc: npc, pages: pages, page: 0, chars: 0, after: after || null };
+  G.state = 'dialog';
+}
+function pageLen(p) { return p.reduce(function (a, l) { return a + l.length; }, 0); }
+function updateDialog(dt) {
+  var d = ui.dialog, p = d.pages[d.page];
+  var before = Math.floor(d.chars);
+  d.chars += dt * 48;
+  if (Math.floor(d.chars / 3) !== Math.floor(before / 3) && d.chars < pageLen(p)) Snd.play('blip');
+  if (Input.hit('ok') || pressed.__tap) {
+    if (d.chars < pageLen(p)) d.chars = 999;
+    else if (d.page < d.pages.length - 1) { d.page++; d.chars = 0; Snd.play('select'); }
+    else {
+      ui.dialog = null;
+      if (G.state === 'dialog') G.state = 'play';
+      if (d.after) d.after();
+    }
+  }
+}
+function drawDialogBox(g, npc, pages, page, chars) {
+  var w = Math.min(VW - 16, 368), x = Math.round((VW - w) / 2), h = 60, y = VH - h - 6 - bottomInset;
+  panel(g, x, y, w, h);
+  px(g, x + 7, y + 8, 38, 38, '#7a4a1e'); px(g, x + 8, y + 9, 36, 36, '#b9d9a0');
+  if (npc) g.drawImage(npc.portrait, x + 10, y + 11, 32, 32); else g.drawImage(SPR.snailR, x + 12, y + 17, 28, 20);
+  drawText(g, npc ? npc.name : '', x + 8, y + 48, RUST);
+  var left = chars, tx = x + 52, ty = y + 8;
+  (pages[page] || []).forEach(function (line, i) {
+    var s = line.slice(0, Math.max(0, left));
+    left -= line.length;
+    drawText(g, s, tx, ty + i * 11, BROWN);
+  });
+  if (chars >= pageLen(pages[page] || []) && Math.floor(performance.now() / 400) % 2) {
+    px(g, x + w - 12, y + h - 10, 5, 1, BARK); px(g, x + w - 11, y + h - 9, 3, 1, BARK); px(g, x + w - 10, y + h - 8, 1, 1, BARK);
+  }
+  hitRect(0, 0, VW, VH, function () { pressed.__a = true; });
+}
+
+// ---------- choices ----------
+function openChoice(npc, text, options) {
+  ui.choice = { npc: npc, text: text, options: options, sel: 0 };
+  G.state = 'choice';
+}
+function updateChoice() {
+  var c = ui.choice;
+  if (Input.hit('up')) { c.sel = (c.sel + c.options.length - 1) % c.options.length; Snd.play('blip'); }
+  if (Input.hit('down')) { c.sel = (c.sel + 1) % c.options.length; Snd.play('blip'); }
+  if (Input.hit('back')) { c.sel = c.options.length - 1; pick(); return; }
+  if (Input.hit('ok')) pick();
+  function pick() { var o = c.options[c.sel]; ui.choice = null; G.state = 'play'; Snd.play('select'); o.fn(); }
+}
+function drawChoice(g) {
+  var c = ui.choice, w = Math.min(VW - 16, 368), lines = wrapText(c.text, w - 20, 1);
+  var h = 16 + lines.length * 10 + c.options.length * 12, x = Math.round((VW - w) / 2), y = VH - h - 6 - bottomInset;
+  panel(g, x, y, w, h);
+  lines.forEach(function (l, i) { drawText(g, l, x + 10, y + 8 + i * 10, BROWN); });
+  c.options.forEach(function (o, i) {
+    var oy = y + 12 + lines.length * 10 + i * 12;
+    if (i === c.sel) { px(g, x + 8, oy - 2, w - 16, 11, '#ecc98a'); drawText(g, '>', x + 11, oy, BARK); }
+    drawText(g, o.label, x + 20, oy, BROWN);
+    hitRect(x + 8, oy - 2, w - 16, 11, (function (k) { return function () { c.sel = k; pressed.__a = true; }; })(i));
+  });
+}
+
+// ---------- shop ----------
+function openShop(who) { ui.shop = { who: who, sel: 0 }; G.state = 'shop'; Snd.play('door'); }
+function updateShop() {
+  var s = ui.shop, items = shopItems(s.who), n = items.length + 1;
+  s.sel = Math.min(s.sel, n - 1);
+  if (Input.hit('up')) { s.sel = (s.sel + n - 1) % n; Snd.play('blip'); }
+  if (Input.hit('down')) { s.sel = (s.sel + 1) % n; Snd.play('blip'); }
+  if (Input.hit('back')) { ui.shop = null; G.state = 'play'; return; }
+  if (Input.hit('ok')) {
+    if (s.sel === items.length) { ui.shop = null; G.state = 'play'; return; }
+    shopBuy(s.who, items[s.sel]);
+  }
+}
+function drawShop(g) {
+  var s = ui.shop, items = shopItems(s.who), w = Math.min(VW - 16, 300);
+  var greet = wrapText(SHOP_GREETING[s.who], w - 20, 1);
+  var h = 30 + greet.length * 10 + (items.length + 1) * 12, x = Math.round((VW - w) / 2), y = Math.max(4, Math.round((VH - h) / 2) - 10);
+  panel(g, x, y, w, h);
+  greet.forEach(function (l, i) { drawText(g, l, x + 10, y + 8 + i * 10, BROWN); });
+  var gy = y + 10 + greet.length * 10;
+  drawText(g, 'Your gold: ' + fmt(G.gold) + ' g', x + 10, gy, RUST);
+  items.concat([{ label: 'Leave', price: null }]).forEach(function (it, i) {
+    var oy = gy + 14 + i * 12;
+    if (i === s.sel) { px(g, x + 8, oy - 2, w - 16, 11, '#ecc98a'); drawText(g, '>', x + 11, oy, BARK); }
+    drawText(g, it.label, x + 20, oy, BROWN);
+    if (it.price !== null) {
+      var ptxt = it.price < 0 ? '+' + fmt(-it.price) + ' g' : fmt(it.price) + ' g';
+      drawText(g, ptxt, x + w - 12 - textW(ptxt), oy, it.price < 0 ? '#2f7a3a' : (G.gold < it.price ? '#b04030' : BROWN));
+    }
+    hitRect(x + 8, oy - 2, w - 16, 11, (function (k) { return function () { s.sel = k; pressed.__a = true; }; })(i));
+  });
+}
+
+// ---------- journal ----------
+function drawJournal(g) {
+  var w = Math.min(VW - 12, 372), h = Math.min(VH - 12, 204), x = Math.round((VW - w) / 2), y = Math.round((VH - h) / 2);
+  panel(g, x, y, w, h);
+  drawText(g, 'JOURNAL', x + 10, y + 8, RUST);
+  drawText(g, 'Day ' + G.day + '   ' + DIFFS[G.diff].name, x + w - 10 - textW('Day ' + G.day + '   ' + DIFFS[G.diff].name), y + 8, RUST);
+  var cy = y + 22;
+  drawText(g, 'Main quest, step ' + Math.min(G.main + 1, 24) + ' of 24', x + 10, cy, BARK); cy += 10;
+  wrapText(G.main < 24 ? MAIN[G.main] : 'Done. The snail stopped.', w - 20, 1).forEach(function (l) { drawText(g, l, x + 10, cy, BROWN); cy += 10; });
+  if (G.main === 22) { drawText(g, fmt(G.gold) + ' / 1,000,000 g', x + 10, cy, BROWN); cy += 10; }
+  cy += 4;
+  drawText(g, 'Side quests', x + 10, cy, BARK); cy += 10;
+  var any = false;
+  Object.keys(SIDE).forEach(function (k) {
+    if (G.side[k] === 0) return;
+    any = true;
+    var q = SIDE[k], done = G.side[k] === 2;
+    drawText(g, (done ? 'done  ' : (G.inv[q.need] || 0) + '/' + q.n + '  ') + q.text, x + 10, cy, done ? '#8a7a60' : BROWN); cy += 10;
+  });
+  if (!any) { drawText(g, 'None yet. People in the village have work.', x + 10, cy, '#8a7a60'); cy += 10; }
+  cy += 4;
+  drawText(g, 'Bag', x + 10, cy, BARK); cy += 10;
+  var bag = [];
+  Object.keys(ITEM_NAMES).forEach(function (k) { if (G.inv[k]) bag.push(ITEM_NAMES[k] + ' ' + G.inv[k]); });
+  ['pickaxe', 'rod', 'boots', 'tent'].forEach(function (t) { if (G.tools[t]) bag.push({ pickaxe: 'Pickaxe', rod: 'Fishing rod', boots: 'Running shoes', tent: 'Tent' }[t]); });
+  wrapText(bag.length ? bag.join(', ') : 'Empty. You have gold, though.', w - 20, 1).slice(0, 3).forEach(function (l) { drawText(g, l, x + 10, cy, BROWN); cy += 10; });
+  var help = 'Move WASD  Run Shift  Act E  Items 1-5  Mute M  Close Q';
+  drawText(g, help, x + Math.round((w - textW(help)) / 2), y + h - 13, '#8a7a60');
+  hitRect(0, 0, VW, VH, function () { pressed.q = true; });
+}
+
+// ---------- hud ----------
+function drawHud(g) {
+  var hw = 104, hx = VW - hw - 4, hy = 4;
+  panel(g, hx, hy, hw, 44);
+  drawText(g, 'DAY ' + G.day, hx + 8, hy + 7, BROWN);
+  var ct = clockText(G.time);
+  drawText(g, ct, hx + hw - 8 - textW(ct), hy + 7, G.time >= 1080 ? '#b04030' : BROWN);
+  drawText(g, fmt(G.gold) + ' g', hx + 8, hy + 18, RUST);
+  g.drawImage(SPR.snailIcon, hx + 8, hy + 30);
+  var st = snail.state, label;
+  if (st === 'orbit') label = 'in orbit'; else if (st === 'jarred') label = 'in a jar ' + Math.ceil(snail.t);
+  else if (st === 'frozen') label = 'frozen ' + Math.ceil(snail.t); else if (st === 'stopped') label = 'stopped';
+  else label = fmt(snailMeters()) + ' m';
+  drawText(g, label, hx + 21, hy + 29, st === 'chase' && snailMeters() < 40 ? '#b04030' : BROWN);
+  px(g, hx, hy + 47, hw, 5, BARK);
+  px(g, hx + 1, hy + 48, Math.round((hw - 2) * player.stamina / 100), 3, player.fed > 0 ? '#e0a860' : '#6fbf5a');
+
+  if (G.main < 24) {
+    var qw = Math.min(160, VW - 122), lines = wrapText(MAIN[G.main], qw - 10, 1).slice(0, 3), qh = 14 + lines.length * 9;
+    darkBox(g, 4, 4, qw, qh, 0.62);
+    drawText(g, 'QUEST ' + (G.main + 1) + '/24', 9, 8, '#e8c060');
+    lines.forEach(function (l, i) { drawText(g, l, 9, 18 + i * 9, CREAM); });
+    hitRect(4, 4, qw, qh, function () { pressed.q = true; });
+  }
+
+  var slots = [['salt', G.inv.salt], ['jar', G.inv.jar], ['ice', G.inv.ice], ['bread', G.inv.bread], ['tent', G.tools.tent ? 1 : 0]];
+  var sw = 20, total = slots.length * (sw + 2) - 2, sx = Math.round((VW - total) / 2), sy = VH - sw - 4 - bottomInset;
+  slots.forEach(function (s, i) {
+    var x = sx + i * (sw + 2), has = s[1] > 0;
+    px(g, x, sy, sw, sw, BARK); px(g, x + 1, sy + 1, sw - 2, sw - 2, has ? PARCH : '#a89878');
+    var ic = SPR.item[s[0]];
+    g.globalAlpha = has ? 1 : 0.35;
+    g.drawImage(ic, x + Math.round((sw - ic.width) / 2), sy + Math.round((sw - ic.height) / 2) + 1);
+    g.globalAlpha = 1;
+    drawText(g, String(i + 1), x + 2, sy + 2, has ? RUST : '#7a6a50');
+    if (s[0] !== 'tent' && has) { var n = String(s[1]); drawText(g, n, x + sw - 2 - textW(n), sy + sw - 9, BROWN); }
+    hitRect(x, sy, sw, sw, (function (k) { return function () { pressed.__slot = k; }; })(i + 1));
+  });
+
+  if (ui.prompt && G.state === 'play') {
+    var p = 'E  ' + ui.prompt.label, pw = textW(p) + 12, ppx = Math.round((VW - pw) / 2), ppy = sy - 16;
+    darkBox(g, ppx, ppy, pw, 12, 0.75);
+    drawText(g, 'E', ppx + 6, ppy + 3, '#e8c060');
+    drawText(g, ui.prompt.label, ppx + 6 + textW('E  '), ppy + 3, CREAM);
+    hitRect(ppx, ppy, pw, 12, function () { pressed.__a = true; });
+  }
+
+  var ty = 56;
+  ui.toasts.forEach(function (t) {
+    var tw = textW(t.msg) + 12, tx = Math.round((VW - tw) / 2);
+    g.globalAlpha = clamp(t.t / 0.5, 0, 1);
+    darkBox(g, tx, ty, tw, 13, 0.8);
+    drawText(g, t.msg, tx + 6, ty + 3, CREAM);
+    g.globalAlpha = 1;
+    ty += 15;
+  });
+}
+
+// arrow at the screen edge while the snail is off screen
+function drawSnailPointer(g) {
+  if (snail.state === 'orbit' || snail.state === 'stopped') return;
+  var sx = snail.x - cam.x, sy = snail.y - cam.y;
+  if (sx > -4 && sx < VW + 4 && sy > -4 && sy < VH + 4) return;
+  var cx = VW / 2, cy = VH / 2, dx = sx - cx, dy = sy - cy;
+  var k = Math.min((VW / 2 - 14) / Math.abs(dx || 0.001), (VH / 2 - 14) / Math.abs(dy || 0.001));
+  var ax = Math.round(cx + dx * k), ay = Math.round(cy + dy * k);
+  darkBox(g, ax - 11, ay - 7, 22, 14, 0.7);
+  g.drawImage(SPR.snailIcon, ax - 4, ay - 3);
+  var ang = Math.atan2(dy, dx), tipx = Math.round(ax + Math.cos(ang) * 13), tipy = Math.round(ay + Math.sin(ang) * 10);
+  px(g, tipx - 1, tipy - 1, 3, 3, snailMeters() < 40 ? DANGER : '#e8c060');
+}
+
+function drawDanger(g) {
+  if (snail.state !== 'chase') return;
+  var d = snailDistTiles();
+  if (d > 6) return;
+  var a = (1 - d / 6) * (0.35 + 0.25 * Math.sin(performance.now() / 150));
+  g.fillStyle = 'rgba(160,30,20,' + a.toFixed(3) + ')';
+  g.fillRect(0, 0, VW, 6); g.fillRect(0, VH - 6, VW, 6); g.fillRect(0, 0, 6, VH); g.fillRect(VW - 6, 0, 6, VH);
+}
+// ================= actions: interaction, fishing, mining, sleep, death, save =================
+var objIndex = {};
+function indexObjects() {
+  objIndex = {};
+  objects.forEach(function (o) {
+    for (var y = o.ty; y < o.ty + o.fh; y++) for (var x = o.tx; x < o.tx + o.fw; x++) objIndex[y * MAP_W + x] = o;
+  });
+}
+var DOORS = { cottage: 'bed', store: 'hilde', glass: 'greta', smithy: 'bram', workshop: 'otto', library: 'ines' };
+var DOOR_LABEL = { cottage: 'Go to bed', store: 'Enter the shop', glass: 'Knock', smithy: 'Knock', workshop: 'Knock', library: 'Enter the library' };
+
+function findInteraction() {
+  var best = null, bd = 24;
+  Object.keys(NPCS).forEach(function (id) {
+    var n = NPCS[id];
+    if (!n.visible()) return;
+    var d = dist(n.x, n.y, player.x, player.y);
+    if (d < bd) { bd = d; best = { label: 'Talk to ' + n.name, fn: function () { talk(id); } }; }
+  });
+  if (best) return best;
+  var keysB = Object.keys(BUILDINGS);
+  for (var i = 0; i < keysB.length; i++) {
+    var b = BUILDINGS[keysB[i]], dr = doorOf(b);
+    if (dist(dr.x, dr.y, player.x, player.y) < 14) {
+      var target = DOORS[keysB[i]];
+      return { label: DOOR_LABEL[keysB[i]], fn: target === 'bed' ? function () { askSleep('bed'); } : function () { talk(target); } };
+    }
+  }
+  if (G.rocket && G.main >= 19) {
+    var dp = dist(PAD.cx, PAD.cy, player.x, player.y) / TILE;
+    var onPad = snail.state === 'chase' && dist(PAD.cx, PAD.cy, snail.x, snail.y) < 1.7 * TILE;
+    if (onPad && dp < 12) return { label: 'Launch the rocket', fn: launchRocket };
+    if (dp < 3) return { label: 'Check the rocket', fn: function () { toast('Ready. It needs a passenger on the pad.'); } };
+  }
+  var f = frontTile(), o = objIndex[f.y * MAP_W + f.x];
+  if (o && o.alive && (o.kind === 'crystal' || o.kind === 'ice')) {
+    return { label: G.tools.pickaxe ? 'Mine' : 'Needs a pickaxe', fn: function () { mine(o); } };
+  }
+  if (o && o.kind === 'well') return { label: 'Look into the well', fn: function () { toast('A well. The snail could climb out of it.'); } };
+  if (o && o.kind === 'sign') return { label: 'Read the sign', fn: function () { toast('East: Mossbury. West: nothing. Everywhere: the snail.'); } };
+  var ft = getT(f.x, f.y);
+  if (G.tools.rod && (ft === T.WATER || ft === T.DEEP)) return { label: 'Fish', fn: startFishing };
+  return null;
+}
+
+function mine(o) {
+  if (!G.tools.pickaxe) { nope('Bram sells pickaxes.'); return; }
+  o.hp--; Snd.play('hit'); shake = 0.12;
+  if (o.hp > 0) return;
+  o.alive = false; rebuildSolid();
+  var item = o.kind === 'crystal' ? 'crystal' : 'ice';
+  G.inv[item]++;
+  Snd.play('pickup'); toast('+1 ' + ITEM_NAMES[item]);
+  checkQuestProgress();
+}
+
+// ---------- fishing ----------
+var fishing = null;
+function startFishing() {
+  var f = frontTile();
+  fishing = { tx: f.x, ty: f.y, t: 1.4 + hash2(Math.floor(G.time * 10), G.day, 7) * 3, bite: 0 };
+  G.state = 'fishing';
+  Snd.play('cast');
+}
+function updateFishing(dt) {
+  if (Input.hit('back') || Math.abs(Input.x()) + Math.abs(Input.y()) > 0.5) { fishing = null; G.state = 'play'; return; }
+  if (fishing.bite > 0) {
+    fishing.bite -= dt;
+    if (Input.hit('ok') || pressed.__tap) {
+      G.inv.fish++; Snd.play('pickup'); toast('+1 Fish');
+      fishing = null; G.state = 'play'; checkQuestProgress(); return;
+    }
+    if (fishing.bite <= 0) { toast('It got away.'); fishing = null; G.state = 'play'; }
+    return;
+  }
+  fishing.t -= dt;
+  if (Input.hit('ok')) { toast('Too early. Nothing there.'); fishing = null; G.state = 'play'; return; }
+  if (fishing.t <= 0) { fishing.bite = 0.85; Snd.play('bite'); }
+}
+
+// ---------- sleep ----------
+var transition = null;
+function askSleep(kind) {
+  if (G.time < 720) { nope('Too early to sleep. After 18:00.'); return; }
+  var hours = Math.min(10, (1440 - G.time) / 60);
+  var adv = hours * DIFFS[G.diff].night;
+  var m = snailMeters(), am = Math.round(adv * METERS_PER_TILE);
+  var chasing = snail.state === 'chase';
+  var where = kind === 'tent' ? 'Pitch the tent here and sleep?' : 'Sleep until morning?';
+  if (chasing && adv >= snailDistTiles() - 0.7) {
+    openChoice(null, 'It is ' + fmt(m) + ' m away. Tonight it moves about ' + fmt(am) + ' m. If you sleep here, you will not wake up.',
+      [{ label: 'Sleep anyway', fn: function () { doSleep(hours, false); } }, { label: 'Keep going', fn: function () {} }]);
+  } else {
+    openChoice(null, where + ' Tonight the snail moves about ' + fmt(am) + ' m. It is ' + (chasing ? fmt(m) + ' m away.' : 'busy right now.'),
+      [{ label: 'Sleep', fn: function () { doSleep(hours, false); } }, { label: 'Not yet', fn: function () {} }]);
+  }
+}
+function doSleep(hours, passedOut) {
+  var before = snail.state === 'chase' ? snailMeters() : null;
+  if (snail.state !== 'chase' && snail.state !== 'stopped') { snail.t = 0; snailRecovers(); }
+  var dead = false;
+  if (snail.state === 'chase') {
+    var left = moveSnailToward(player.x, player.y - 3, hours * DIFFS[G.diff].night * TILE);
+    if (left < 9) dead = true;
+  }
+  G.day++;
+  G.time = passedOut ? 120 : 0;
+  player.stamina = 100; player.fed = 0;
+  spawnPickups(); respawnNodes();
+  transition = { t: 0, day: G.day, from: before, to: snail.state === 'chase' ? snailMeters() : null, passedOut: passedOut, dead: dead };
+  G.state = 'sleeping';
+  Snd.play('sleep');
+  if (!dead) save();
+}
+function updateTransition(dt) {
+  transition.t += dt;
+  if (transition.t >= 3) {
+    var tr = transition;
+    transition = null;
+    if (tr.dead) die('It found you in your sleep.');
+    else { G.state = 'play'; toast('Day ' + tr.day + '. Pickups and rocks are back.'); }
+  }
+}
+
+// ---------- death and the end ----------
+var endInfo = null;
+function die(msg) {
+  if (G.state === 'dead') return;
+  G.state = 'dead';
+  endInfo = { msg: msg, sel: 0 };
+  Snd.play('death');
+  shake = 0.4;
+}
+function winGame() {
+  snail.state = 'stopped';
+  pay(1000000);
+  G.main = 24;
+  G.state = 'won';
+  endInfo = { sel: 0 };
+  Snd.play('win');
+  save();
+}
+
+// ---------- save ----------
+var SAVE_KEY = 'trail-save-v1';
+function serialize() {
+  return {
+    G: G,
+    player: { x: player.x, y: player.y, dir: player.dir },
+    snail: { x: snail.x, y: snail.y, state: snail.state, t: snail.t, facing: snail.facing, pts: snail.pts },
+    nodes: objects.filter(function (o) { return o.kind === 'crystal' || o.kind === 'ice'; }).map(function (o) { return [o.alive ? 1 : 0, o.hp]; })
+  };
+}
+function save() {
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(serialize())); } catch (e) {}
+}
+function hasSave() {
+  try { return !!localStorage.getItem(SAVE_KEY); } catch (e) { return false; }
+}
+function applySave(s) {
+  G = Object.assign(freshState(s.G.diff), s.G);
+  G.inv = Object.assign(freshState(0).inv, s.G.inv);
+  G.tools = Object.assign(freshState(0).tools, s.G.tools);
+  G.side = Object.assign(freshState(0).side, s.G.side);
+  G.state = 'play';
+  player.x = s.player.x; player.y = s.player.y; player.dir = s.player.dir || 'down'; player.stamina = 100; player.fed = 0;
+  snail.x = s.snail.x; snail.y = s.snail.y; snail.state = s.snail.state; snail.t = s.snail.t; snail.facing = s.snail.facing || 1;
+  snail.pts = s.snail.pts || []; snail.sx = snail.x; snail.sy = snail.y; snail.deepT = 0;
+  redrawTrail();
+  var nodes = objects.filter(function (o) { return o.kind === 'crystal' || o.kind === 'ice'; });
+  (s.nodes || []).forEach(function (n, i) { if (nodes[i]) { nodes[i].alive = !!n[0]; nodes[i].hp = n[1]; } });
+  rebuildSolid();
+  spawnPickups();
+  ui.toasts = []; ui.dialog = null; ui.choice = null; ui.shop = null;
+}
+function loadSave() {
+  try {
+    var raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return false;
+    applySave(JSON.parse(raw));
+    return true;
+  } catch (e) { return false; }
+}
+function newGame(diff) {
+  G = freshState(diff);
+  resetActors();
+  respawnNodes();
+  spawnPickups();
+  ui.toasts = []; ui.dialog = null; ui.choice = null; ui.shop = null;
+  NPCS.pip.x = NPCS.pip.hx; NPCS.pip.y = NPCS.pip.hy;
+  openDialog(null, [
+    'You took the deal. 1,000,000 gold.',
+    'And a snail. It is immortal. It always knows where you are. If it ever touches you, you die.',
+    'It is slow. It is already on its way.',
+    'Marta in the village square knows the old story. Start there.'
+  ]);
+}
+// ================= loop: camera, rendering, screens, boot =================
+var cam = { x: 0, y: 0 };
+var nightCanvas = makeCanvas(VW, VH);
+var bottomInset = 0;
+var heartT = 0, titleSel = 0, titleDiff = 1;
+
+function updateCamera() {
+  cam.x = clamp(Math.round(player.x - VW / 2), 0, MAP_W * TILE - VW);
+  cam.y = clamp(Math.round(player.y - 8 - VH / 2), 0, MAP_H * TILE - VH);
+  if (shake > 0) {
+    cam.x += Math.round((hash2(Math.floor(performance.now() / 16), 1, 3) - 0.5) * 6 * Math.min(1, shake));
+    cam.y += Math.round((hash2(Math.floor(performance.now() / 16), 2, 3) - 0.5) * 6 * Math.min(1, shake));
+  }
+}
+
+function drawChar(g, spr, x, y, dir, moving, anim) {
+  var img = charFrame(spr, dir, moving, anim);
+  px(g, Math.round(x - cam.x) - 4, Math.round(y - cam.y) - 1, 8, 2, 'rgba(0,0,0,0.25)');
+  g.drawImage(img, Math.round(x - cam.x) - 6, Math.round(y - cam.y) - img.height);
+}
+function drawSnail(g) {
+  var sx = Math.round(snail.x - cam.x), sy = Math.round(snail.y - cam.y);
+  var moving = snail.state === 'chase';
+  var alt = moving && Math.floor(snail.anim * 2.5) % 2 === 1;
+  var img = snail.facing < 0 ? (alt ? SPR.snailL2 : SPR.snailL) : (alt ? SPR.snailR2 : SPR.snailR);
+  var deep = snailInDeep();
+  if (deep) g.globalAlpha = 0.28;
+  px(g, sx - 6, sy, 12, 2, 'rgba(0,0,0,0.22)');
+  g.drawImage(img, sx - 7, sy - 9);
+  g.globalAlpha = 1;
+  var tnow = performance.now() / 1000;
+  if (deep) for (var b = 0; b < 3; b++) { var ph = (tnow * 1.3 + b * 0.33) % 1; px(g, sx - 3 + b * 3, sy - 6 - Math.round(ph * 10), 2, 2, 'rgba(230,245,255,' + (1 - ph).toFixed(2) + ')'); }
+  if (snail.state === 'salted') for (var s = 0; s < 6; s++) px(g, sx - 6 + Math.floor(hash2(s, Math.floor(tnow * 8), 1) * 13), sy - 10 + Math.floor(hash2(s, Math.floor(tnow * 8), 2) * 10), 1, 1, '#ffffff');
+  if (snail.state === 'frozen') { g.globalAlpha = 0.75; g.drawImage(ART.ice, sx - 8, sy - 13); g.globalAlpha = 1; }
+  if (snail.state === 'jarred') {
+    px(g, sx - 10, sy - 16, 20, 1, '#9c6d43'); px(g, sx - 10, sy - 15, 20, 2, '#7d5533');
+    px(g, sx - 10, sy - 13, 1, 14, 'rgba(200,236,248,0.9)'); px(g, sx + 9, sy - 13, 1, 14, 'rgba(200,236,248,0.9)');
+    px(g, sx - 9, sy, 18, 1, 'rgba(200,236,248,0.9)'); px(g, sx - 9, sy - 13, 18, 13, 'rgba(200,236,248,0.18)'); px(g, sx - 7, sy - 11, 1, 6, '#ffffff');
+  }
+  if (snail.state === 'stopped' && Math.floor(tnow) % 2) drawText(g, 'z', sx + 6, sy - 18, CREAM);
+}
+
+function renderWorld(g, withActors) {
+  g.drawImage(groundCanvas, cam.x, cam.y, VW, VH, 0, 0, VW, VH);
+  var tnow = performance.now() / 1000, x0 = Math.floor(cam.x / TILE), y0 = Math.floor(cam.y / TILE);
+  var tick = Math.floor(tnow * 1.5);
+  for (var y = y0; y <= y0 + Math.ceil(VH / TILE); y++) for (var x = x0; x <= x0 + Math.ceil(VW / TILE); x++) {
+    var t = getT(x, y);
+    if ((t === T.WATER || t === T.DEEP) && hash2(x, y, tick) < 0.07) px(g, x * TILE - cam.x + 2 + Math.floor(hash2(x, y, tick + 1) * 9), y * TILE - cam.y + 5 + Math.floor(hash2(x, y, tick + 2) * 8), 4, 1, 'rgba(255,255,255,0.55)');
+  }
+  g.drawImage(trailCanvas, cam.x, cam.y, VW, VH, 0, 0, VW, VH);
+  pickups.forEach(function (p) {
+    if (!p.alive) return;
+    var img = SPR.item[p.type], sx = Math.round(p.x - cam.x), sy = Math.round(p.y - cam.y);
+    if (sx < -10 || sy < -10 || sx > VW + 10 || sy > VH + 10) return;
+    g.drawImage(img, sx - Math.floor(img.width / 2), sy - img.height + Math.round(Math.sin(tnow * 3 + p.x) * 0.6));
+  });
+  var list = [];
+  objects.forEach(function (o) {
+    if (!o.alive) return;
+    var ox = o.tx * TILE + o.ox, oy = o.ty * TILE + o.oy;
+    if (ox > cam.x + VW || oy > cam.y + VH || ox + o.img.width < cam.x || oy + o.img.height < cam.y) return;
+    list.push({ y: o.sortY, d: function () {
+      g.drawImage(o.img, ox - cam.x, oy - cam.y);
+      if (o.hp && o.maxHp && o.hp < o.maxHp) px(g, ox - cam.x + 2, oy - cam.y - 3, Math.round(12 * o.hp / o.maxHp), 2, '#e8c060');
+    } });
+  });
+  if (G && (G.rocket || rocketFx > 0)) {
+    var lift = rocketFx > 0 ? Math.pow(2.5 - rocketFx, 2) * 70 : 0;
+    list.push({ y: PAD.cy + 8, d: function () {
+      var rx = Math.round(PAD.cx - cam.x - 7), ry = Math.round(PAD.cy - cam.y - 34 - lift);
+      g.drawImage(ART.rocket, rx, ry);
+      if (rocketFx > 0) { px(g, rx + 4, ry + 38, 6, 6 + Math.floor(tnow * 20) % 4, '#ffb640'); px(g, rx + 5, ry + 38, 4, 3, '#fff0a0'); }
+    } });
+  }
+  if (withActors) {
+    Object.keys(NPCS).forEach(function (id) {
+      var n = NPCS[id];
+      if (!n.visible()) return;
+      list.push({ y: n.y, d: function () { drawChar(g, n.spr, n.x, n.y, n.dir, n.moving, n.anim); } });
+    });
+    list.push({ y: player.y, d: function () { drawChar(g, SPR.player, player.x, player.y, player.dir, player.moving, player.anim); } });
+  }
+  if (snail.state !== 'orbit') list.push({ y: snail.y, d: function () { drawSnail(g); } });
+  list.sort(function (a, b) { return a.y - b.y; });
+  list.forEach(function (it) { it.d(); });
+  if (fishing) {
+    var bx = fishing.tx * TILE + 8 - cam.x, by = fishing.ty * TILE + 8 - cam.y + (fishing.bite > 0 ? 2 : Math.round(Math.sin(tnow * 3)));
+    g.strokeStyle = 'rgba(255,255,255,0.5)'; g.beginPath(); g.moveTo(player.x - cam.x + 0.5, player.y - cam.y - 12.5); g.lineTo(bx + 0.5, by + 0.5); g.stroke();
+    px(g, bx - 1, by - 1, 3, 3, '#e04040'); px(g, bx - 1, by - 1, 3, 1, '#ffffff');
+    if (fishing.bite > 0) drawText(g, '!', Math.round(player.x - cam.x) - 1, Math.round(player.y - cam.y) - 26, '#ffd23f', 1, INK);
+  }
+}
+
+function renderNight(g, a) {
+  if (a <= 0.01) return;
+  var n = nightCanvas.getContext('2d');
+  n.globalCompositeOperation = 'source-over';
+  n.clearRect(0, 0, VW, VH);
+  n.fillStyle = 'rgba(8,12,34,' + a.toFixed(3) + ')';
+  n.fillRect(0, 0, VW, VH);
+  n.globalCompositeOperation = 'destination-out';
+  function light(x, y, r) {
+    [[r, 0.18], [r * 0.84, 0.32], [r * 0.68, 0.5], [r * 0.52, 0.75], [r * 0.36, 1]].forEach(function (s) {
+      n.fillStyle = 'rgba(0,0,0,' + s[1] + ')'; n.beginPath(); n.arc(Math.round(x), Math.round(y), s[0], 0, Math.PI * 2); n.fill();
+    });
+  }
+  light(player.x - cam.x, player.y - cam.y - 8, 30);
+  objects.forEach(function (o) { if (o.light) light(o.tx * TILE + 8 - cam.x, o.ty * TILE - 6 - cam.y, 38); });
+  if (rocketFx > 0) light(PAD.cx - cam.x, PAD.cy - cam.y, 60);
+  n.globalCompositeOperation = 'source-over';
+  g.drawImage(nightCanvas, 0, 0);
+  g.globalAlpha = Math.min(1, a * 0.9);
+  g.drawImage(trailCanvas, cam.x, cam.y, VW, VH, 0, 0, VW, VH);
+  g.globalAlpha = 1;
+  if (snail.state === 'chase' && !snailInDeep()) {
+    var ex = Math.round(snail.x - cam.x) + (snail.facing < 0 ? -7 : 5), ey = Math.round(snail.y - cam.y) - 7;
+    px(g, ex, ey, 1, 1, '#fff6b0'); px(g, ex + 2, ey, 1, 1, '#fff6b0');
+  }
+}
+
+// ---------- screens ----------
+function menuRows(g, rows, sel, y, onPick) {
+  rows.forEach(function (r, i) {
+    var w = textW(r) + 20, x = Math.round((VW - w) / 2), ry = y + i * 14;
+    if (i === sel) { darkBox(g, x, ry - 3, w, 13, 0.85); drawText(g, '>', x + 4, ry, '#e8c060'); }
+    drawText(g, r, x + 12, ry, i === sel ? '#ffeec4' : '#c8b890');
+    hitRect(x, ry - 3, w, 13, function () { onPick(i); });
+  });
+}
+function titleRows() {
+  var rows = ['New game', 'Snail speed: ' + DIFFS[titleDiff].name];
+  var sc = saveSummary();
+  if (sc.has) rows.push('Continue (day ' + sc.day + ')');
+  rows.push(Snd.isMuted() ? 'Sound: off' : 'Sound: on');
+  return rows;
+}
+var saveCache = { t: -1e9, has: false, day: '?' };
+function saveSummary() {
+  var now = performance.now();
+  if (now - saveCache.t < 1500) return saveCache;
+  saveCache.t = now; saveCache.has = hasSave(); saveCache.day = '?';
+  if (saveCache.has) { try { saveCache.day = JSON.parse(localStorage.getItem(SAVE_KEY)).G.day; } catch (e) {} }
+  return saveCache;
+}
+function titleAction(i) {
+  var rows = titleRows(), r = rows[i];
+  Snd.play('select');
+  if (r === 'New game') newGame(titleDiff);
+  else if (r.indexOf('Snail speed') === 0) titleDiff = (titleDiff + 1) % 3;
+  else if (r.indexOf('Continue') === 0) { if (!loadSave()) toast('Could not load the save.'); }
+  else Snd.toggleMute();
+}
+function updateTitle() {
+  var n = titleRows().length;
+  if (Input.hit('up')) { titleSel = (titleSel + n - 1) % n; Snd.play('blip'); }
+  if (Input.hit('down')) { titleSel = (titleSel + 1) % n; Snd.play('blip'); }
+  if ((Input.hit('left') || Input.hit('right')) && titleSel === 1) { titleDiff = (titleDiff + (Input.hit('left') ? 2 : 1)) % 3; Snd.play('blip'); }
+  if (Input.hit('ok')) titleAction(titleSel);
+}
+function drawTitle(g) {
+  var t = performance.now() / 1000;
+  cam.x = Math.round(560 + Math.sin(t * 0.05) * 120); cam.y = Math.round(470 + Math.cos(t * 0.04) * 60);
+  renderWorld(g, true);
+  darkBox(g, 0, 0, VW, VH, 0.5);
+  var s = VW < 300 ? 5 : 7, tw = textW('TRAIL', s), ty = Math.round(VH * 0.14);
+  drawText(g, 'TRAIL', Math.round((VW - tw) / 2), ty, CREAM, s, '#2a2118');
+  var sub = "Salt won't help.";
+  drawText(g, sub, Math.round((VW - textW(sub)) / 2), ty + 7 * s + 8, '#d8ccae');
+  var blurb = wrapText('An immortal snail follows you. It is slow. It never stops. If it touches you, you die.', Math.min(300, VW - 30), 1);
+  blurb.forEach(function (l, i) { drawText(g, l, Math.round((VW - textW(l)) / 2), ty + 7 * s + 24 + i * 10, '#b8ac90'); });
+  menuRows(g, titleRows(), titleSel, ty + 7 * s + 32 + blurb.length * 10, function (i) { titleSel = i; titleAction(i); });
+  var help = 'WASD move   Shift run   E act   1-5 items   Q journal';
+  if (VW >= 300) drawText(g, help, Math.round((VW - textW(help)) / 2), VH - 12, '#8a7e66');
+}
+function endRows() { return G.state === 'won' ? ['Keep walking', 'New game'] : (hasSave() ? ['Wake up again (last night)', 'New game'] : ['New game']); }
+function endAction(i) {
+  var r = endRows()[i];
+  Snd.play('select');
+  if (r === 'Keep walking') { G.state = 'play'; toast('The snail stays where it is. You are free. And broke.'); }
+  else if (r === 'New game') { G.state = 'title'; titleSel = 0; }
+  else if (!loadSave()) toast('Could not load the save.');
+}
+function updateEnd() {
+  var n = endRows().length;
+  if (Input.hit('up')) endInfo.sel = (endInfo.sel + n - 1) % n;
+  if (Input.hit('down')) endInfo.sel = (endInfo.sel + 1) % n;
+  if (Input.hit('ok')) endAction(endInfo.sel);
+}
+function drawEnd(g) {
+  darkBox(g, 0, 0, VW, VH, G.state === 'won' ? 0.7 : 0.82);
+  var y = Math.round(VH * 0.18);
+  var lines = G.state === 'won'
+    ? ['The snail stopped.', 'It looked at you for a long time. Then it went to sleep.', 'You are broke. You are free.']
+    : [endInfo.msg, 'Day ' + G.day + '. The snail was always going to get there.'];
+  var big = G.state === 'won' ? 'THE END' : 'GAME OVER';
+  drawText(g, big, Math.round((VW - textW(big, 3)) / 2), y, G.state === 'won' ? '#e8c060' : DANGER, 3, INK);
+  y += 32;
+  lines.forEach(function (l) { wrapText(l, VW - 40, 1).forEach(function (w) { drawText(g, w, Math.round((VW - textW(w)) / 2), y, CREAM); y += 11; }); });
+  y += 6;
+  var st = 'Days ' + G.day + '   Quests ' + G.stats.quests + '   Walked ' + fmt(G.stats.walked * METERS_PER_TILE) + ' m   Spent ' + fmt(G.stats.spent) + ' g';
+  wrapText(st, VW - 40, 1).forEach(function (w) { drawText(g, w, Math.round((VW - textW(w)) / 2), y, '#b8ac90'); y += 11; });
+  menuRows(g, endRows(), endInfo.sel, y + 12, function (i) { endInfo.sel = i; endAction(i); });
+}
+function drawTransition(g) {
+  var tr = transition, t = tr.t;
+  var a = t < 0.6 ? t / 0.6 : t > 2.4 ? (3 - t) / 0.6 : 1;
+  px(g, 0, 0, VW, VH, 'rgba(5,7,15,' + clamp(a, 0, 1).toFixed(3) + ')');
+  if (t < 0.5 || t > 2.5) return;
+  var dtext = 'DAY ' + tr.day;
+  drawText(g, dtext, Math.round((VW - textW(dtext, 3)) / 2), Math.round(VH / 2) - 30, CREAM, 3);
+  if (tr.passedOut) { var po = 'You passed out.'; drawText(g, po, Math.round((VW - textW(po)) / 2), Math.round(VH / 2) - 44, '#b8ac90'); }
+  if (tr.from !== null) {
+    var shown = tr.to === null ? tr.from : Math.round(lerp(tr.from, tr.to, clamp((t - 0.9) / 1.1, 0, 1)));
+    var mtxt = fmt(shown) + ' m';
+    g.drawImage(SPR.snailIcon, Math.round(VW / 2 - textW(mtxt) / 2) - 13, Math.round(VH / 2) + 3);
+    drawText(g, mtxt, Math.round((VW - textW(mtxt)) / 2), Math.round(VH / 2) + 2, tr.dead ? DANGER : '#e8c060');
+  }
+}
+
+// ---------- update ----------
+function updatePlay(dt) {
+  G.time += dt * MIN_PER_SEC;
+  updatePlayer(dt);
+  updateSnail(dt);
+  if (G.state !== 'play' && G.state !== 'fishing') return;
+  updateNpcs(dt);
+  updatePickups();
+  if (G.main === 15 && snail.deepT > 5) { toast('Bubbles. Then the bubbles come closer.'); advance(16); }
+  checkQuestProgress();
+  if (G.time >= DAY_LEN) { toast('You passed out.'); doSleep(6, true); return; }
+}
+function update(dt) {
+  if (Input.hit('mute') && G) { toast(Snd.toggleMute() ? 'Sound off' : 'Sound on'); }
+  if (shake > 0) shake -= dt;
+  if (rocketFx > 0) rocketFx -= dt;
+  ui.toasts.forEach(function (t) { t.t -= dt; });
+  ui.toasts = ui.toasts.filter(function (t) { return t.t > 0; });
+  var st = G ? G.state : 'title';
+  if (st === 'title') { updateTitle(); return; }
+  if (st === 'play') {
+    updatePlay(dt);
+    if (G.state !== 'play') return;
+    ui.prompt = findInteraction();
+    if (Input.hit('ok') && ui.prompt) { ui.prompt.fn(); return; }
+    var slot = Input.num();
+    if (slot) useSlot(slot);
+    if (Input.hit('journal')) { G.state = 'journal'; Snd.play('select'); }
+    else if (Input.hit('back')) { G.state = 'journal'; }
+  } else if (st === 'fishing') { updatePlay(dt); if (G.state === 'fishing') updateFishing(dt); }
+  else if (st === 'dialog') updateDialog(dt);
+  else if (st === 'choice') updateChoice();
+  else if (st === 'shop') updateShop();
+  else if (st === 'journal') { if (Input.hit('journal') || Input.hit('back') || Input.hit('ok')) G.state = 'play'; }
+  else if (st === 'sleeping') updateTransition(dt);
+  else if (st === 'dead' || st === 'won') updateEnd();
+
+  var live = G.state === 'play' || G.state === 'fishing';
+  var d = snailDistTiles();
+  Snd.tense(live && snail.state === 'chase' && d < 12);
+  Snd.mode(nightAlpha(G.time) > 0.3 ? 'night' : 'day');
+  if (live && snail.state === 'chase' && d < 12) {
+    heartT -= dt;
+    if (heartT <= 0) { Snd.play('heart'); heartT = 0.45 + d / 12 * 0.9; }
+  }
+}
+
+// ---------- render ----------
+function render() {
+  uiHits = [];
+  ctx.imageSmoothingEnabled = false;
+  if (!G || G.state === 'title') {
+    if (!G) G = freshState(1), G.state = 'title';
+    drawTitle(ctx);
+    drawToastsOnly();
+    return;
+  }
+  updateCamera();
+  renderWorld(ctx, true);
+  renderNight(ctx, nightAlpha(G.time));
+  drawDanger(ctx);
+  drawSnailPointer(ctx);
+  drawHud(ctx);
+  if (G.state === 'dialog' && ui.dialog) { var d = ui.dialog; drawDialogBox(ctx, d.npc, d.pages, d.page, d.chars); }
+  if (G.state === 'choice' && ui.choice) drawChoice(ctx);
+  if (G.state === 'shop' && ui.shop) drawShop(ctx);
+  if (G.state === 'journal') drawJournal(ctx);
+  if (G.state === 'sleeping' && transition) drawTransition(ctx);
+  if (G.state === 'dead' || G.state === 'won') drawEnd(ctx);
+}
+function drawToastsOnly() {
+  var ty = VH - 20;
+  ui.toasts.forEach(function (t) { var tw = textW(t.msg) + 12; darkBox(ctx, Math.round((VW - tw) / 2), ty, tw, 13, 0.8); drawText(ctx, t.msg, Math.round((VW - tw) / 2) + 6, ty + 3, CREAM); ty -= 15; });
+}
+
+// ---------- boot ----------
+function resize() {
+  var w = window.innerWidth || 0, h = window.innerHeight || 0;
+  if (w < 50 || h < 50) { w = 1280; h = 720; }
+  if (h > w * 1.15) { VW = 240; VH = clamp(Math.round(240 * h / w), 240, 420); }
+  else { VH = 216; VW = clamp(Math.round(216 * w / h), 300, 420); }
+  cvs.width = VW; cvs.height = VH;
+  nightCanvas.width = VW; nightCanvas.height = VH;
+  var scale = Math.min(w / VW, h / VH);
+  if (scale >= 2) scale = Math.floor(scale);
+  cvs.style.width = Math.round(VW * scale) + 'px';
+  cvs.style.height = Math.round(VH * scale) + 'px';
+  bottomInset = document.getElementById('touch').hidden ? 0 : Math.ceil(150 / scale);
+}
+window.addEventListener('resize', resize);
+
+var last = 0;
+function frame(now) {
+  var dt = last ? Math.min(0.05, (now - last) / 1000) : 0.016;
+  last = now;
+  try { update(dt); render(); } catch (e) { console.error(e); }
+  Input.endFrame();
+  requestAnimationFrame(frame);
+}
+
+generateWorld();
+indexObjects();
+setupNpcs();
+G = freshState(1); G.state = 'title';
+resetActors();
+spawnPickups();
+resize();
+cvs.focus();
+try {
+  if (window.claude && window.claude.hot && window.claude.hot.snapshot) {
+    window.claude.hot.snapshot(function () { return G && G.state !== 'title' ? { save: serialize() } : {}; });
+  }
+  var boot = function (data) { if (data && data.save) { try { applySave(data.save); } catch (e) {} } requestAnimationFrame(frame); };
+  if (window.claude && window.claude.hot && window.claude.hot.ready) window.claude.hot.ready(boot);
+  else boot(window.claude && window.claude.hot ? window.claude.hot.data : null);
+} catch (e) { requestAnimationFrame(frame); }
+
+// debug handle for testing from the console
+window.__trail = {
+  get G() { return G; }, player: player, snail: snail, NPCS: NPCS, objects: objects,
+  talk: talk, useSlot: useSlot, doSleep: doSleep, advance: advance, newGame: newGame, launchRocket: launchRocket,
+  findInteraction: findInteraction, pickups: function () { return pickups; },
+  press: function (k) { pressed[k] = true; }, hold: function (k, v) { keys[k] = v; },
+  step: function (n, dt) { for (var i = 0; i < (n || 1); i++) { update(dt || 1 / 60); render(); Input.endFrame(); } return G.state; }
+};
+})();
+</script>
+</body>
+</html>

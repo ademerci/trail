@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trail</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trail is a small top-down pixel game about an immortal snail that follows you forever. Download one file and play it offline.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Pixelify+Sans:wght@500;700&display=swap">
+<style>
+  :root {
+    --night: #0e1510;
+    --moss: #16221a;
+    --line: #2a3a2c;
+    --cream: #ece2c6;
+    --mute: #a79e84;
+    --parch: #f6dea8;
+    --parch-hi: #ffeec4;
+    --parch-lo: #d9a860;
+    --bark: #5a3a1a;
+    --ink: #3b2314;
+    --slime: #cfeee2;
+    --gold: #e8c060;
+    --danger: #e88470;
+    --display: "Pixelify Sans", "Courier New", monospace;
+    --body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--night); }
+  body {
+    margin: 0;
+    background: var(--night);
+    color: var(--cream);
+    font: 17px/1.6 var(--body);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--slime); text-underline-offset: 3px; }
+  a:hover { color: #ffffff; }
+  :focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding-inline: 20px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  h2, h3 { font-family: var(--display); font-weight: 700; line-height: 1.15; text-wrap: balance; margin: 0; }
+  h2 { font-size: clamp(26px, 3.4vw, 34px); color: var(--cream); }
+  h3 { font-size: 19px; color: var(--cream); }
+  p { margin: 0; max-width: 62ch; }
+  .label { font-family: var(--display); font-weight: 500; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--gold); }
+
+  /* top bar */
+  .top { border-bottom: 1px solid var(--line); }
+  .top .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block: 14px; flex-wrap: wrap; }
+  .top nav { display: flex; gap: 20px; flex-wrap: wrap; font-size: 15px; }
+  .top nav a { color: var(--mute); text-decoration: none; }
+  .top nav a:hover { color: var(--cream); }
+  .mark { display: block; height: 22px; image-rendering: pixelated; }
+
+  /* hero */
+  .hero .wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 48px; align-items: center; padding-block: 56px 36px; }
+  .hero h1 { margin: 12px 0 6px; line-height: 0; }
+  .logo { display: block; width: min(100%, 360px); height: auto; image-rendering: pixelated; }
+  .tag { font-family: var(--display); font-size: 22px; color: #d8ccae; margin-top: 18px; }
+  .pitch { margin-top: 16px; color: var(--cream); }
+  .pitch em { color: var(--danger); font-style: normal; }
+
+  .get {
+    margin-top: 28px;
+    background: var(--parch);
+    color: var(--ink);
+    border: 3px solid var(--bark);
+    box-shadow: inset 2px 2px 0 var(--parch-hi), inset -2px -2px 0 var(--parch-lo), 4px 4px 0 rgba(0, 0, 0, 0.35);
+    padding: 20px 22px;
+    max-width: 440px;
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 12px;
+    font: 700 19px/1 var(--display);
+    color: var(--parch);
+    background: var(--bark);
+    border: 0;
+    padding: 14px 20px;
+    cursor: pointer;
+    box-shadow: inset 0 -4px 0 #3b2512;
+  }
+  .btn:hover { background: #6b4620; }
+  .btn:active { box-shadow: inset 0 3px 0 #3b2512; transform: translateY(1px); }
+  .btn svg { width: 18px; height: 18px; flex: none; }
+  .meta { margin-top: 12px; font-size: 15px; color: #6e5438; font-variant-numeric: tabular-nums; }
+  .status { margin-top: 8px; font-size: 15px; color: var(--ink); }
+  .status:empty { display: none; }
+  .alt { margin-top: 6px; font-size: 15px; }
+  .alt a { color: var(--bark); font-weight: 700; }
+
+  .frame { margin: 0; border: 3px solid var(--bark); background: #000; box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.4); }
+  .frame img, .shots img { display: block; width: 100%; height: auto; image-rendering: pixelated; }
+
+  /* the crawl strip: a slow snail and its trail */
+  .crawl { border-block: 1px solid var(--line); background: var(--moss); }
+  .crawl canvas { display: block; width: 100%; height: 96px; image-rendering: pixelated; }
+  .crawl p { font-size: 14px; color: var(--mute); padding-block: 8px 10px; }
+
+  section { padding-block: 64px 8px; }
+  .intro { display: grid; gap: 10px; margin-bottom: 28px; }
+
+  /* steps */
+  .steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; counter-reset: s; }
+  .steps li { border-top: 3px solid var(--slime); padding-top: 16px; display: grid; gap: 8px; align-content: start; }
+  .steps li::before { counter-increment: s; content: counter(s); font: 700 34px/1 var(--display); color: var(--slime); }
+  .steps p { color: var(--mute); font-size: 16px; }
+  .steps code, .faq code { font: 15px/1.4 ui-monospace, Consolas, monospace; background: var(--moss); border: 1px solid var(--line); padding: 1px 6px; color: var(--cream); }
+
+  /* screenshots */
+  .shots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; margin-top: 28px; }
+  .shots figure { margin: 0; display: grid; gap: 10px; align-content: start; }
+  .shots .frame { box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.4); }
+  .shots figcaption { font-size: 15px; color: var(--mute); }
+
+  /* controls */
+  .keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 14px 28px; margin: 28px 0 0; }
+  .keys div { display: flex; align-items: center; gap: 14px; }
+  .keys dt { display: flex; gap: 6px; flex: none; }
+  .keys dd { margin: 0; color: var(--cream); font-size: 16px; }
+  kbd {
+    display: inline-grid; place-items: center;
+    min-width: 34px; height: 34px; padding: 0 8px;
+    font: 700 15px/1 var(--display);
+    color: var(--ink); background: var(--parch);
+    border: 2px solid var(--bark);
+    box-shadow: inset 0 -3px 0 var(--parch-lo);
+  }
+
+  /* questions */
+  .faq { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px 40px; margin-top: 28px; }
+  .faq div { display: grid; gap: 6px; align-content: start; }
+  .faq p { color: var(--mute); font-size: 16px; }
+
+  footer { margin-top: 72px; border-top: 1px solid var(--line); }
+  footer .wrap { padding-block: 22px 32px; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; font-size: 14px; color: var(--mute); }
+
+  @media (max-width: 860px) {
+    .hero .wrap { grid-template-columns: minmax(0, 1fr); gap: 32px; padding-block: 36px 28px; }
+    .steps, .shots { grid-template-columns: minmax(0, 1fr); }
+    .faq { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 420px) {
+    body { font-size: 16px; }
+    .top nav { gap: 14px; }
+    .get { padding: 16px; }
+    .btn { width: 100%; justify-content: center; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a href="#top" aria-label="Trail, back to top"><canvas class="mark" id="mark" aria-hidden="true"></canvas></a>
+    <nav aria-label="Sections">
+      <a href="#local">Play offline</a>
+      <a href="#game">The game</a>
+      <a href="#controls">Controls</a>
+      <a href="#questions">Questions</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <div class="hero">
+    <div class="wrap">
+      <div>
+        <div class="label">A pixel game about an immortal snail</div>
+        <h1><span class="sr">Trail</span><canvas class="logo" id="logo" aria-hidden="true"></canvas></h1>
+        <p class="tag">Salt won't help.</p>
+        <p class="pitch">You took the deal: a million gold, and a snail that follows you forever. It is slow. It always knows where you are. <em>If it touches you, you die.</em> Somewhere at the end of 24 quests there is a way to make it stop.</p>
+
+        <div class="get">
+          <button class="btn" id="download" type="button">
+            <svg viewBox="0 0 18 18" aria-hidden="true"><path fill="currentColor" d="M7 1h4v7h3l-5 6-5-6h3zM1 15h16v2H1z"/></svg>
+            Download trail.html
+          </button>
+          <p class="meta">One file, 107 KB. Runs in any modern browser on Windows, Mac or Linux. No install, no account, no internet needed.</p>
+          <p class="status" id="status" role="status" aria-live="polite"></p>
+          <p class="alt">Or <a id="playlink" href="trail.html" target="_blank" rel="noopener">play it in the browser</a> first.</p>
+        </div>
+      </div>
+      <figure class="frame">
+        <img src="shots/day.png" width="384" height="216" alt="The farmer stands on a dirt path near the lake. A snail sits right next to him, at the end of a long glistening slime trail across the meadow. The meter in the corner reads 11 m.">
+      </figure>
+    </div>
+  </div>
+
+  <div class="crawl" aria-hidden="true">
+    <canvas id="crawl"></canvas>
+    <div class="wrap"><p id="crawl-note">This snail is moving at its in-game speed. It will get there.</p></div>
+  </div>
+
+  <section id="local" aria-labelledby="local-h">
+    <div class="wrap">
+      <div class="intro">
+        <div class="label">Play offline</div>
+        <h2 id="local-h">Three steps, no install</h2>
+      </div>
+      <ol class="steps">
+        <li>
+          <h3>Download the file</h3>
+          <p>Press the button above. You get one file, <code>trail.html</code>. Everything is in it: the world, the sprites, the music.</p>
+        </li>
+        <li>
+          <h3>Open it</h3>
+          <p>Double-click <code>trail.html</code> in your downloads folder. It opens in your browser and runs without internet. Move it anywhere you like first.</p>
+        </li>
+        <li>
+          <h3>Play, then sleep</h3>
+          <p>The game saves when you go to bed, in the browser you opened it with. Open the same file in the same browser next time and pick Continue.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="game" aria-labelledby="game-h">
+    <div class="wrap">
+      <div class="intro">
+        <div class="label">The game</div>
+        <h2 id="game-h">Everyone in Mossbury has an idea. None of them work.</h2>
+        <p>Marta sends you to buy salt. Greta blows you a glass jar. Bram sells you a pickaxe for the old ice in the peaks. Oskar says the sea takes everything. Otto has a rocket. The snail keeps coming, in a straight line, through water and over cliffs. Every failed plan costs gold, and the real way out needs all of it back.</p>
+      </div>
+      <div class="shots">
+        <figure>
+          <div class="frame"><img src="shots/night.png" width="384" height="216" alt="The village at night, lit only by street lamps and the light around the player."></div>
+          <figcaption>Nights are dark. The snail keeps moving while you sleep.</figcaption>
+        </figure>
+        <figure>
+          <div class="frame"><img src="shots/talk.png" width="384" height="216" alt="A dialogue box with Marta's portrait: So you are the one with the million. And the snail."></div>
+          <figcaption>Marta knows the old story. Her grandmother counted 247 steps.</figcaption>
+        </figure>
+        <figure>
+          <div class="frame"><img src="shots/pier.png" width="384" height="216" alt="The long wooden pier over the sea. A slime trail crosses the deep water toward the player and Oskar."></div>
+          <figcaption>The sea does not take it. It walks along the bottom.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="controls" aria-labelledby="controls-h">
+    <div class="wrap">
+      <div class="intro">
+        <div class="label">Controls</div>
+        <h2 id="controls-h">Keyboard, or touch on a phone</h2>
+      </div>
+      <dl class="keys">
+        <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Walk (arrow keys work too)</dd></div>
+        <div><dt><kbd>Shift</kbd></dt><dd>Run, until you run out of breath</dd></div>
+        <div><dt><kbd>E</kbd></dt><dd>Talk, open doors, mine, fish</dd></div>
+        <div><dt><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></dt><dd>Salt, jar, ice. Only when it is close</dd></div>
+        <div><dt><kbd>4</kbd><kbd>5</kbd></dt><dd>Eat bread, pitch the tent</dd></div>
+        <div><dt><kbd>Q</kbd></dt><dd>Journal with quests and bag</dd></div>
+        <div><dt><kbd>M</kbd></dt><dd>Sound on or off</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section id="questions" aria-labelledby="questions-h">
+    <div class="wrap">
+      <div class="intro">
+        <div class="label">Questions</div>
+        <h2 id="questions-h">Before you start running</h2>
+      </div>
+      <div class="faq">
+        <div><h3>How long is it?</h3><p>The main quest has 24 steps. Plan on an hour, more if you pick the Dread speed on the title screen.</p></div>
+        <div><h3>Where is my save?</h3><p>In your browser's storage for that file. A private window forgets it, and so does clearing site data. Moving the file to another folder can start you fresh too.</p></div>
+        <div><h3>Does it work on a phone?</h3><p>Yes, with an on-screen stick and buttons. On a phone it is easiest to play in the browser instead of downloading.</p></div>
+        <div><h3>Can I share it?</h3><p>Send someone <code>trail.html</code>. It is a plain web page with no dependencies, so it opens anywhere a browser does.</p></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Trail, version 1. Made in Mossbury.</span>
+    <span>The snail is still coming.</span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+  var reduce = false;
+  try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
+
+  // ---------- the game's own 5x7 font, for the wordmark ----------
+  var GLYPH = {
+    T: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
+    R: ['####.', '#...#', '#...#', '####.', '#.#..', '#..#.', '#...#'],
+    A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+    I: ['###', '.#.', '.#.', '.#.', '.#.', '.#.', '###'],
+    L: ['#....', '#....', '#....', '#....', '#....', '#....', '#####']
+  };
+  function wordmark(canvas, scale, shadow) {
+    var word = 'TRAIL', w = 0;
+    for (var i = 0; i < word.length; i++) w += GLYPH[word[i]][0].length + 1;
+    w -= 1;
+    canvas.width = (w + (shadow ? 1 : 0)) * scale;
+    canvas.height = (7 + (shadow ? 1 : 0)) * scale;
+    var g = canvas.getContext('2d');
+    function draw(ox, oy, color) {
+      g.fillStyle = color;
+      var x = 0;
+      for (var i = 0; i < word.length; i++) {
+        var rows = GLYPH[word[i]];
+        for (var r = 0; r < 7; r++) for (var c = 0; c < rows[r].length; c++) if (rows[r][c] === '#') g.fillRect((x + c + ox) * scale, (r + oy) * scale, scale, scale);
+        x += rows[0].length + 1;
+      }
+    }
+    if (shadow) draw(1, 1, '#2a2118');
+    draw(0, 0, '#f5e9c8');
+  }
+  wordmark(document.getElementById('logo'), 12, true);
+  wordmark(document.getElementById('mark'), 3, false);
+
+  // ---------- the crawl strip ----------
+  var SNAIL = ['...sssss......', '..sSSSSSs.....', '.sSShhhSSs.e.e', '.sShssshSs.b.b', '.sShsSshSs.b.b', '.sShsssShs.b.b', '.sSShhhSSsbbbb', '..sSSSSSsbbbbb', '...bbbbbbbbbb.', '....dddddddd..'];
+  var SNAIL_PAL = { s: '#d9853b', S: '#8a4b1f', h: '#f2b46b', b: '#b9d86c', d: '#7fa03f', e: '#222222' };
+  var FARMER = ['...HHHHHH...', '..HHHHHHHH..', '..HHHHHHHH..', '..HHHHHHHH..', '..HHHHHHHH..', '..kHHHHHHk..', '...kkkkkk...', '..tttttttt..', '.ttttttTttt.', '.kkttttTtkk.', '.kkttttttkk.', '...tttttt...', '...pppppp...', '...pp..pp...', '...pp..pp...', '...ss..ss...'];
+  var FARMER_PAL = { H: '#6b3f20', k: '#f1c9a5', t: '#3a72c4', T: '#2c5799', p: '#2f2f4f', s: '#222222' };
+  function sprite(g, rows, pal, x, y) {
+    for (var r = 0; r < rows.length; r++) for (var c = 0; c < rows[r].length; c++) { var col = pal[rows[r][c]]; if (col) { g.fillStyle = col; g.fillRect(x + c, y + r, 1, 1); } }
+  }
+  function rnd(seed) { return function () { seed = (seed * 16807) % 2147483647; return seed / 2147483647; }; }
+
+  var crawl = document.getElementById('crawl'), cg = crawl.getContext('2d');
+  var H = 32, W = 0, ground = null, start = performance.now();
+  var SPEED = 7, running = false;  // the game's Normal speed: 7 pixels a second, drawn here at the game's own pixel size
+  function layout() {
+    var cssW = crawl.clientWidth || 800;
+    W = Math.max(120, Math.round(cssW / 3));
+    crawl.width = W; crawl.height = H;
+    ground = document.createElement('canvas'); ground.width = W; ground.height = H;
+    var g = ground.getContext('2d'), r = rnd(7);
+    g.fillStyle = '#2c4a26'; g.fillRect(0, 0, W, H);
+    for (var i = 0; i < W * 0.9; i++) {
+      var x = Math.floor(r() * W), y = Math.floor(r() * H);
+      g.fillStyle = i % 3 ? '#243e20' : '#365a2e'; g.fillRect(x, y, i % 3 ? 1 : 2, 1);
+    }
+    for (var f = 0; f < W / 22; f++) { g.fillStyle = ['#d8d0a0', '#c88aa8', '#e8e8e0'][f % 3]; g.fillRect(Math.floor(r() * W), 3 + Math.floor(r() * (H - 6)), 1, 1); }
+    sprite(g, FARMER, FARMER_PAL, W - 22, 8);
+  }
+  function frame(now) {
+    var t = (now - start) / 1000;
+    var end = W - 38, x = reduce ? Math.round(end * 0.55) : Math.min(end, -14 + t * SPEED);
+    cg.drawImage(ground, 0, 0);
+    cg.fillStyle = 'rgba(207,238,226,0.55)'; cg.fillRect(0, 21, Math.max(0, Math.round(x) + 2), 2);
+    cg.fillStyle = 'rgba(143,205,182,0.5)'; cg.fillRect(0, 23, Math.max(0, Math.round(x) + 2), 1);
+    for (var s = 3; s < x; s += 7) { cg.fillStyle = 'rgba(255,255,255,0.8)'; cg.fillRect(s + ((s * 13) % 5), 21 + (s % 2), 1, 1); }
+    sprite(cg, SNAIL, SNAIL_PAL, Math.round(x), 14);
+    var metres = Math.max(0, Math.round((end - x) / 16 * 5));
+    var note = document.getElementById('crawl-note');
+    if (!reduce && Math.floor(t * 2) !== Math.floor((t - 0.016) * 2)) note.textContent = metres > 0 ? 'This snail moves at its in-game speed. ' + metres + ' m to go.' : 'It got there.';
+    running = !reduce && x < end;
+    if (running) requestAnimationFrame(frame);
+  }
+  function kick() { if (!running) requestAnimationFrame(frame); }
+  layout();
+  kick();
+  var rt = null;
+  window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(function () { layout(); kick(); }, 150); });
+
+  // ---------- download ----------
+  // Inside Claude the page asks the viewer's permission to save the file.
+  // Hosted anywhere else (or opened from disk) a normal download link does the job.
+  var inClaude = !!(window.claude && typeof window.claude.use === 'function');
+  var dlReady = inClaude ? window.claude.use('downloads').catch(function () { return null; }) : Promise.resolve(null);
+  if (inClaude) document.getElementById('playlink').href = 'https://claude.ai/artifact/3mcVxz3djgho3Lf2x625bh';
+  var btn = document.getElementById('download'), status = document.getElementById('status');
+  function say(msg) { status.textContent = msg; }
+  function plainDownload() {
+    var a = document.createElement('a');
+    a.href = 'trail.html'; a.download = 'trail.html';
+    document.body.appendChild(a); a.click(); a.remove();
+    say('Download started. Open trail.html from your downloads folder.');
+  }
+  btn.addEventListener('click', function () {
+    btn.disabled = true;
+    say('Getting the file ready...');
+    dlReady.then(function (downloads) {
+      if (!downloads) { if (inClaude) say('Downloads are not available in this view. Use "play it in the browser" instead.'); else plainDownload(); return null; }
+      return fetch('trail.html').then(function (res) {
+        if (!res.ok) throw { code: 'fetch' };
+        return res.blob();
+      }).then(function (blob) {
+        return downloads.save({ filename: 'trail.html', data: blob });
+      }).then(function () {
+        say('Saved. Open trail.html from your downloads folder.');
+      });
+    }).catch(function (e) {
+      var code = e && e.code;
+      if (code === 'declined') say('Download cancelled.');
+      else if (code === 'rate_limited') say('A save prompt is already open.');
+      else if (code === 'fetch') say('The game file could not be loaded. Reload the page and try again.');
+      else say('Downloads are not available in this view. Use "play it in the browser" instead.');
+    }).then(function () { btn.disabled = false; });
+  });
+})();
+</script>
+</body>
+</html>

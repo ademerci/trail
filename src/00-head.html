@@ -1,0 +1,68 @@
+<title>Trail</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+  :root {
+    --ink: #14100c;
+    --parch: #f6dea8;
+    --bark: #5a3a1a;
+    --text: #e9dcb8;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; margin: 0; background: var(--ink); overflow: hidden; }
+  body { color: var(--text); font: 13px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  #wrap {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--ink);
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  }
+  #game {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    outline: none;
+    touch-action: none;
+    background: #000;
+  }
+  #touch { position: fixed; inset: 0; pointer-events: none; }
+  #stick {
+    position: absolute;
+    left: calc(18px + env(safe-area-inset-left, 0px));
+    bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+    width: 120px; height: 120px; border-radius: 50%;
+    background: rgba(246, 222, 168, 0.12);
+    border: 2px solid rgba(246, 222, 168, 0.35);
+    pointer-events: auto; touch-action: none;
+  }
+  #knob {
+    position: absolute; left: 40px; top: 40px;
+    width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(246, 222, 168, 0.55);
+  }
+  .tbtn {
+    position: absolute;
+    border-radius: 50%;
+    border: 2px solid var(--bark);
+    background: rgba(246, 222, 168, 0.82);
+    color: #3b2314;
+    font: bold 15px ui-monospace, monospace;
+    pointer-events: auto; touch-action: none;
+  }
+  .tbtn:active { background: #ffeec4; }
+  #bA { width: 66px; height: 66px; right: calc(20px + env(safe-area-inset-right, 0px)); bottom: calc(30px + env(safe-area-inset-bottom, 0px)); }
+  #bRun { width: 54px; height: 54px; font-size: 12px; right: calc(98px + env(safe-area-inset-right, 0px)); bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
+  #bMenu { width: 46px; height: 46px; font-size: 12px; right: calc(30px + env(safe-area-inset-right, 0px)); bottom: calc(112px + env(safe-area-inset-bottom, 0px)); }
+</style>
+
+<div id="wrap"><canvas id="game" tabindex="0" aria-label="Trail, a pixel game about an immortal snail"></canvas></div>
+<div id="touch" hidden>
+  <div id="stick"><div id="knob"></div></div>
+  <button class="tbtn" id="bRun" type="button">RUN</button>
+  <button class="tbtn" id="bA" type="button">E</button>
+  <button class="tbtn" id="bMenu" type="button">Q</button>
+</div>
+
+<script>
+(function () {
+'use strict';
